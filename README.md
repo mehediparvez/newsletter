@@ -525,324 +525,221 @@ The long-term solution transitions from Google Apps Script to a more scalable ar
 
 #### 1. Data Structure in BigQuery
 
-**Members Table**
-```sql
-CREATE TABLE `project.newsletter.members` (
-  member_id STRING,
-  email STRING,
-  name STRING,
-  create_date TIMESTAMP,
-  status STRING,
-  last_updated TIMESTAMP
-);
-```
+The long-term solution uses a properly normalized database structure in BigQuery with four main tables designed for scalability and analytics:
 
-**Portfolios Table**
-```sql
-CREATE TABLE `project.newsletter.portfolios` (
-  portfolio_id STRING,
-  member_id STRING,
-  asset STRING,
-  type STRING,
-  source_sheet_url STRING,
-  last_synced TIMESTAMP
-);
-```
+**Members Table Design**:
+- Stores core member information (ID, email, name)
+- Tracks member status and important timestamps
+- Serves as the central reference for all member-related operations
+- Optimized for fast lookups and joins
 
-**Research Table**
-```sql
-CREATE TABLE `project.newsletter.research` (
-  asset STRING,
-  week_date DATE,
-  update STRING,
-  default_message STRING,
-  created_by STRING,
-  created_at TIMESTAMP
-);
-```
+**Portfolios Table Design**:
+- Implements a one-to-many relationship with members
+- Each row represents one asset in a member's portfolio
+- Maintains source information linking back to Google Sheets
+- Includes synchronization metadata for tracking freshness
 
-**Newsletter Log Table**
-```sql
-CREATE TABLE `project.newsletter.newsletter_logs` (
-  log_id STRING,
-  member_id STRING,
-  send_date TIMESTAMP,
-  status STRING,
-  error_message STRING,
-  content STRING
-);
-```
+**Research Table Design**:
+- Organized by asset and date dimensions
+- Stores both weekly updates and default fallback messages
+- Includes attribution data for auditing purposes
+- Structured for efficient filtering by date ranges
+
+**Newsletter Log Table Design**:
+- Comprehensive delivery tracking for each newsletter
+- Records success/failure status and error details
+- Stores content for compliance and troubleshooting
+- Designed for efficient reporting and analytics
 
 #### 2. Sheet to BigQuery Synchronization
 
 **A. Google Apps Script Sync**:
 
-```javascript
-function syncSheetsToBigQuery() {
-  // Get all member sheets
-  const memberSheets = getAllMemberSheets();
-  
-  // Process in batches
-  const BATCH_SIZE = 100;
-  for (let i = 0; i < memberSheets.length; i += BATCH_SIZE) {
-    const batch = memberSheets.slice(i, i + BATCH_SIZE);
-    processBatchSync(batch);
-  }
-}
+**Implementation Approach:**
+1. **Member Sheet Discovery**:
+   - Use the Member Registry to identify all portfolio sheets
+   - Implement delta detection to identify sheets with changes
+   - Group sheets by modification time for efficient processing
 
-function processBatchSync(sheetBatch) {
-  // Extract data from each sheet
-  const portfolioData = [];
-  
-  for (const sheetInfo of sheetBatch) {
-    const sheet = SpreadsheetApp.openById(sheetInfo.id).getSheetByName(sheetInfo.sheetName);
-    const data = sheet.getDataRange().getValues();
-    
-    // Extract member ID and assets
-    const memberId = extractMemberId(data);
-    const assets = extractAssets(data);
-    
-    // Add to batch data
-    for (const asset of assets) {
-      portfolioData.push({
-        portfolio_id: Utilities.getUuid(),
-        member_id: memberId,
-        asset: asset,
-        type: 'Portfolio',
-        source_sheet_url: sheetInfo.url,
-        last_synced: new Date().toISOString()
-      });
-    }
-  }
-  
-  // Send to BigQuery using API
-  const payload = {
-    rows: portfolioData
-  };
-  
-  // Use BigQuery API to insert data
-  UrlFetchApp.fetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT_ID}/datasets/${DATASET_ID}/tables/${TABLE_ID}/insertAll`, {
-    method: 'post',
-    headers: {
-      'Authorization': `Bearer ${getAccessToken()}`,
-      'Content-Type': 'application/json'
-    },
-    payload: JSON.stringify(payload)
-  });
-}
+2. **Batch Processing Architecture**:
+   - Process sheets in configurable batches of ~100 for optimal performance
+   - Implement checkpointing to handle large member bases
+   - Apply priority processing for newly created or modified sheets
+   - Support both full and incremental synchronization modes
+
+3. **Data Extraction Pattern**:
+   - Extract member information and asset lists from each sheet
+   - Transform Google Sheets data into BigQuery-compatible format
+   - Generate unique IDs for new portfolio entries
+   - Apply data validation and cleansing rules
+
+4. **BigQuery Integration**:
+   - Authenticate via OAuth with appropriate scopes
+   - Use BigQuery streaming API for real-time updates
+   - Implement batch insertions for efficiency
+   - Apply proper error handling and retries
+
+**Optimizations:**
+- Implement change detection to sync only modified sheets
+- Use BigQuery's streaming buffer for performance
+- Apply compression for large data transfers
+- Implement connection pooling for API efficiency
+- Cache authentication tokens for reduced overhead
+
+**Limitations and Constraints:**
+- Google Apps Script's 6-minute execution limit requires batching
+- BigQuery API has quotas and rate limits
+- Authentication token expiration requires refresh handling
+- Large datasets may require multiple synchronization passes
+- Network latency can impact real-time synchronization
 ```
 
 **B. Scheduled Syncs and Triggers**:
 
-1. Daily full sync from all sheets to BigQuery
-2. Change triggers for real-time updates
-3. Error logging and retry mechanisms
+**Implementation Approach:**
+1. **Multi-Tiered Sync Strategy**:
+   - Daily full synchronization during off-peak hours
+   - Hourly incremental syncs for recently modified sheets
+   - Real-time change triggers for critical updates
+   - Manual trigger capability for admin-initiated syncs
+
+2. **Synchronization Workflow**:
+   - Scheduled Cloud Functions/Cloud Scheduler jobs
+   - Event-based triggers using Google Drive change notifications
+   - Webhook integration for custom synchronization events
+   - Progressive scanning with continuation tokens
+
+3. **Monitoring and Alerting**:
+   - Comprehensive sync logs in BigQuery
+   - Performance metrics dashboards in Looker Studio
+   - Alert system for sync failures or anomalies
+   - Admin notification for critical issues
+
+**Optimizations:**
+- Implement differential synchronization to minimize data transfer
+- Use persistent checkpoint tracking to handle interruptions
+- Apply intelligent scheduling based on usage patterns
+- Implement parallel processing for large synchronization jobs
+
+**Limitations and Constraints:**
+- Google Drive change notifications have limitations on notification frequency
+- Cloud Scheduler has minimum interval constraints
+- Event-driven architectures may require additional infrastructure
+- Cross-system synchronization adds complexity to monitoring
 
 **C. Handling Concurrent Updates**:
 
-Unlike the short-term solution, BigQuery is designed to handle high-volume concurrent operations. When 100 or even 1,000 Google Sheets change simultaneously:
+Unlike the short-term solution, BigQuery is designed to handle high-volume concurrent operations. This provides significant advantages when many Google Sheets change simultaneously:
 
-1. **Atomicity**: BigQuery's insertAll API maintains atomicity for each batch insertion
-2. **Higher Concurrency Limits**: BigQuery can handle thousands of concurrent write operations
-3. **No Central Bottleneck**: Each sheet sync operates independently without contention
-4. **Streaming Buffer**: BigQuery's streaming buffer absorbs burst traffic
-5. **Automatic Retries**: The BigQuery client library implements exponential backoff and retries
+**Implementation Approach:**
+1. **Concurrency Management**:
+   - Leverage BigQuery's native atomic insertion capabilities
+   - Implement idempotent operations to prevent duplicates
+   - Use transaction-like patterns for multi-step operations
+   - Apply version control for conflict detection
 
-Example of resilient BigQuery sync code:
+2. **Resilience Strategy**:
+   - Implement smart retry logic with exponential backoff
+   - Track partial failures for selective reprocessing
+   - Apply circuit breakers to prevent cascade failures
+   - Use deadletter queues for failed operations
 
-```javascript
-function syncSheetToBigQuery(sheetId, sheetData) {
-  const retries = 3;
-  let attempt = 0;
-  
-  while (attempt < retries) {
-    try {
-      // Prepare data as before
-      const portfolioData = preparePortfolioData(sheetId, sheetData);
-      
-      // Use BigQuery insertAll API with automatic retries
-      const result = BigQuery.Datasets.Tables.insertAll({
-        rows: portfolioData.map(item => ({ json: item }))
-      }, PROJECT_ID, DATASET_ID, TABLE_ID);
-      
-      // Check for partial failures and handle if needed
-      if (result.insertErrors && result.insertErrors.length > 0) {
-        logPartialFailures(result.insertErrors);
-      }
-      
-      return;
-    } catch (e) {
-      attempt++;
-      if (attempt >= retries) {
-        logSyncFailure(sheetId, e.message);
-        throw e;
-      }
-      
-      // Exponential backoff
-      Utilities.sleep(Math.pow(2, attempt) * 1000);
-    }
-  }
-}
+3. **Performance Optimization**:
+   - Utilize BigQuery's streaming buffer for high-throughput ingestion
+   - Implement batch operations for efficiency
+   - Use parallelization for independent synchronization tasks
+   - Apply resource pooling for API connections
+
+**Advantages over Short-Term Solution:**
+1. **Superior Atomicity**: Each batch insertion is atomic, preventing partial updates
+2. **Higher Concurrency**: Handles thousands of concurrent operations with ease
+3. **No Central Bottleneck**: Distributed architecture eliminates single points of failure
+4. **Burst Handling**: Streaming buffer absorbs traffic spikes efficiently
+5. **Built-in Resilience**: Client libraries provide sophisticated retry mechanisms
 ```
 
 #### 3. Newsletter Generation with BigQuery and AWS
 
 **A. Query for Newsletter Generation**:
 
-```sql
--- Get all member portfolios matched with current research
-SELECT 
-  m.member_id,
-  m.email,
-  p.asset,
-  IFNULL(r.update, r.default_message) as asset_update
-FROM 
-  `project.newsletter.members` m
-JOIN 
-  `project.newsletter.portfolios` p ON m.member_id = p.member_id
-LEFT JOIN 
-  `project.newsletter.research` r ON p.asset = r.asset AND r.week_date = CURRENT_DATE()
-WHERE 
-  m.status = 'ACTIVE'
-ORDER BY 
-  m.email, p.asset;
-```
+**Implementation Approach:**
+1. **Data Retrieval Strategy**:
+   - Use optimized SQL queries to join member, portfolio, and research data
+   - Implement filtering to include only active members
+   - Apply fallback logic for missing research updates
+   - Structure query results for efficient email generation
+
+2. **Query Optimization Techniques**:
+   - Leverage BigQuery's column-oriented storage for performance
+   - Apply proper indexing and partitioning strategies
+   - Use materialized views for frequently accessed data patterns
+   - Implement query caching where appropriate
+
+3. **Data Processing Pipeline**:
+   - Execute parameterized queries based on current date
+   - Apply data transformation for email-friendly formats
+   - Group results by member for personalized content generation
+   - Implement data validation and sanitization
+
+**Optimizations:**
+- Use BigQuery's parallel processing capabilities
+- Apply query cost optimization techniques
+- Implement efficient join strategies
+- Use BigQuery's query caching mechanisms
+- Apply column selection to minimize data transfer
+
+**Limitations and Constraints:**
+- Complex queries may have higher computational costs
+- Very large result sets require pagination or streaming
+- Query performance depends on table optimization
+- Cross-region queries may introduce latency
 
 **B. AWS Lambda Function for Newsletter Processing**:
 
-```javascript
-// AWS Lambda function (Node.js)
-exports.handler = async (event) => {
-    const { BigQuery } = require('@google-cloud/bigquery');
-    const AWS = require('aws-sdk');
-    const pinpoint = new AWS.Pinpoint();
-    
-    // Initialize BigQuery client
-    const bigquery = new BigQuery();
-    
-    // Get current date in YYYY-MM-DD format
-    const today = new Date().toISOString().split('T')[0];
-    
-    // Query to get all newsletter content
-    const query = `
-      SELECT 
-        m.member_id,
-        m.email,
-        p.asset,
-        IFNULL(r.update, r.default_message) as asset_update
-      FROM 
-        \`${process.env.PROJECT_ID}.newsletter.members\` m
-      JOIN 
-        \`${process.env.PROJECT_ID}.newsletter.portfolios\` p ON m.member_id = p.member_id
-      LEFT JOIN 
-        \`${process.env.PROJECT_ID}.newsletter.research\` r ON p.asset = r.asset AND r.week_date = '${today}'
-      WHERE 
-        m.status = 'ACTIVE'
-      ORDER BY 
-        m.email, p.asset;
-    `;
-    
-    // Run the query
-    const [rows] = await bigquery.query({query});
-    
-    // Group by member
-    const memberUpdates = {};
-    for (const row of rows) {
-        if (!memberUpdates[row.email]) {
-            memberUpdates[row.email] = {
-                memberId: row.member_id,
-                email: row.email,
-                updates: []
-            };
-        }
-        
-        memberUpdates[row.email].updates.push({
-            asset: row.asset,
-            update: row.asset_update
-        });
-    }
-    
-    // Send emails via Amazon Pinpoint
-    const campaignId = `newsletter-${today}`;
-    const applicationId = process.env.PINPOINT_APP_ID;
-    
-    // Process in batches
-    const members = Object.values(memberUpdates);
-    const BATCH_SIZE = 100;
-    
-    for (let i = 0; i < members.length; i += BATCH_SIZE) {
-        const batch = members.slice(i, i + BATCH_SIZE);
-        await sendBatchEmails(pinpoint, applicationId, campaignId, batch);
-    }
-    
-    return {
-        statusCode: 200,
-        body: JSON.stringify(`Processed ${members.length} newsletters`)
-    };
-};
+**Implementation Approach:**
+1. **Serverless Architecture**:
+   - Deploy Node.js Lambda functions triggered on schedule
+   - Implement proper IAM roles for secure cross-service access
+   - Configure appropriate memory and timeout settings
+   - Set up CloudWatch for monitoring and logging
 
-async function sendBatchEmails(pinpoint, applicationId, campaignId, members) {
-    for (const member of members) {
-        // Generate email content
-        const emailContent = generateEmailContent(member);
-        
-        // Send via Pinpoint
-        const params = {
-            ApplicationId: applicationId,
-            MessageRequest: {
-                Addresses: {
-                    [member.email]: {
-                        ChannelType: 'EMAIL'
-                    }
-                },
-                MessageConfiguration: {
-                    EmailMessage: {
-                        FromAddress: 'newsletter@example.com',
-                        SimpleEmail: {
-                            Subject: {
-                                Data: `Your Weekly Investment Updates - ${new Date().toLocaleDateString()}`
-                            },
-                            HtmlPart: {
-                                Data: emailContent
-                            }
-                        }
-                    }
-                }
-            }
-        };
-        
-        try {
-            await pinpoint.sendMessages(params).promise();
-            
-            // Log success to BigQuery
-            await logEmailStatus(member.memberId, member.email, 'SENT');
-        } catch (error) {
-            console.error(`Error sending to ${member.email}:`, error);
-            
-            // Log error to BigQuery
-            await logEmailStatus(member.memberId, member.email, 'ERROR', error.message);
-        }
-    }
-}
+2. **Cross-Platform Integration**:
+   - Connect to BigQuery using authorized service accounts
+   - Retrieve personalized newsletter data for all members
+   - Transform data into email-friendly format
+   - Organize content by member for batch processing
 
-function generateEmailContent(member) {
-    let content = getEmailTemplate(); // Get base template
-    let updatesHtml = '';
-    
-    for (const update of member.updates) {
-        updatesHtml += `
-            <div class="asset-update">
-                <h3>${update.asset}</h3>
-                <p>${update.update}</p>
-            </div>
-        `;
-    }
-    
-    return content
-        .replace('{{MEMBER_EMAIL}}', member.email)
-        .replace('{{DATE}}', new Date().toLocaleDateString())
-        .replace('{{UPDATES}}', updatesHtml);
-}
+3. **Email Generation Process**:
+   - Group data by member to create personalized content collections
+   - Apply HTML templates with consistent branding
+   - Insert dynamic content based on portfolio matches
+   - Implement responsive design for various devices
+
+4. **Amazon Pinpoint Integration**:
+   - Configure campaign-based email distribution
+   - Implement batch processing for efficient delivery
+   - Apply proper error handling and retry mechanisms
+   - Log delivery status for monitoring and compliance
+
+5. **Monitoring and Feedback Loop**:
+   - Record detailed delivery metrics in BigQuery
+   - Track open rates and engagement via Pinpoint
+   - Implement automated alerts for delivery issues
+   - Create dashboards for newsletter performance analytics
+
+**Optimizations:**
+- Use connection pooling for API efficiency
+- Implement parallel processing for large member bases
+- Apply compression for template storage
+- Utilize Lambda provisioned concurrency for consistent performance
+- Implement caching for frequently used assets
+
+**Limitations and Constraints:**
+- Lambda functions have execution time limits (15 minutes)
+- Memory constraints for large data processing
+- Cold start latency for infrequent executions
+- API rate limits with Amazon Pinpoint
+- Cross-service authentication complexity
 ```
 
 #### 4. Amazon Pinpoint vs HubSpot Cost Comparison
