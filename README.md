@@ -24,6 +24,30 @@ The short-term solution leverages Google Sheets, Google Apps Script, and HubSpot
 
 ![Short-Term Architecture](https://i.imgur.com/example1.png) *(Diagram placeholder)*
 
+#### Technology Selection Rationale
+
+After evaluating multiple automation options:
+
+1. **Google Apps Script** (Selected): 
+   - Native integration with Google Sheets
+   - No additional costs or third-party dependencies
+   - Familiar to most Google Workspace users
+   - Faster implementation timeline
+
+2. **Make (Integromat)**: 
+   - More visual workflow builder
+   - Better for complex multi-system integrations
+   - Monthly subscription costs
+   - Additional learning curve
+
+3. **n8n**:
+   - Self-hosted option provides better data ownership
+   - Open-source with fair-code license
+   - Requires server setup and maintenance
+   - More complex implementation timeline
+
+Google Apps Script was selected for the short-term solution due to its native integration with Google Sheets and ability to meet the October 30 deadline with the least complexity.
+
 #### Key Components:
 
 1. **Member Portfolio Sheets**: Individual Google Sheets for each member containing their asset lists
@@ -541,17 +565,37 @@ This approach distributes updates over time and ensures that even with many simu
 
 ### High-Level Design
 
-The long-term solution transitions from Google Apps Script to a more scalable architecture using BigQuery for data storage and Amazon Pinpoint for email delivery, while still preserving Google Sheets as the input interface.
+The long-term solution transitions from Google Apps Script to a more scalable architecture using BigQuery for data storage and Amazon Pinpoint for email delivery, while still preserving Google Sheets as the input interface. This architecture ensures true data ownership and prepares the system for future AI and LLM integration.
 
 ![Long-Term Architecture](https://i.imgur.com/example2.png) *(Diagram placeholder)*
+
+#### Technology Selection Rationale
+
+1. **BigQuery**:
+   - Full data ownership with structured SQL access
+   - Designed for analytics on large datasets
+   - Unlimited scalability for growing member base
+   - Strong integration with AI/ML services for future enhancements
+
+2. **Looker Studio**:
+   - Direct integration with BigQuery
+   - Custom dashboards for monitoring system performance
+   - Visual analytics for portfolio trends and newsletter effectiveness
+   - Shareable reports for stakeholders
+
+3. **AWS Services vs. All-Google Solution**:
+   - AWS Pinpoint offers significantly lower costs at scale than alternatives
+   - Hybrid architecture leverages strengths of both platforms
+   - Future-proof design with multiple integration options
 
 #### Key Components:
 
 1. **Member Portfolio Sheets**: Remain as input interface for members
 2. **Google Apps Script**: Handles sync from sheets to BigQuery
 3. **BigQuery**: Central data warehouse for all portfolio and research data
-4. **Amazon Pinpoint**: Scalable email delivery service
-5. **AWS Lambda**: Serverless functions for data processing and newsletter generation
+4. **Looker Studio**: Analytics dashboards and reporting
+5. **Amazon Pinpoint**: Scalable email delivery service
+6. **AWS Lambda**: Serverless functions for data processing and newsletter generation
 
 ### Low-Level Design
 
@@ -946,20 +990,36 @@ For 30,000 weekly newsletters:
    - Clearly separated concerns (data storage, processing, delivery)
    - Standard cloud architecture patterns
 
+6. **True Data Ownership**:
+   - Full control over data storage, structure, and access
+   - No vendor lock-in with standardized SQL data format
+   - Ability to migrate or extend to other systems if needed
+   - Custom data retention policies and compliance controls
+
+7. **AI/LLM Integration Ready**:
+   - Structured data format optimal for machine learning models
+   - BigQuery's direct integration with AI services
+   - Clean, normalized data structure ready for LLM training or queries
+   - Potential for future AI-driven portfolio analysis and personalization
+
 ## Conclusion
 
 This document outlines two complementary approaches to the personalized newsletter system:
 
 1. **Short-Term Solution**: Google Sheets + Apps Script + HubSpot for 1,000 members
    - Quick to implement before the October 30 deadline
+   - Selected Google Apps Script over Make/n8n for speed and native integration
    - Leverages existing Google Sheets infrastructure
    - Dynamic member sheet registry for easy onboarding
    - Suitable for the current scale of operations
    - Efficient column-based Master Sheet structure
 
-2. **Long-Term Solution**: Google Sheets + BigQuery + AWS for 30,000+ members
+2. **Long-Term Solution**: Google Sheets + BigQuery + Looker Studio + AWS for 30,000+ members
    - Scalable architecture that preserves Google Sheets as input interface
+   - True data ownership with BigQuery as the central warehouse
+   - Advanced analytics and reporting through Looker Studio
    - Significantly more cost-effective at scale
+   - AI/LLM-ready data structure for future enhancements
    - Robust and maintainable for long-term growth
 
 The column-based Master Sheet structure provides several advantages:
@@ -969,4 +1029,4 @@ The column-based Master Sheet structure provides several advantages:
 - Better scalability within the Google Sheets environment
 - Simpler transition path to the long-term BigQuery solution
 
-By implementing the short-term solution now with the optimized data structure and planning for the gradual transition to the long-term architecture, the newsletter system can grow smoothly with the business without disrupting operations or requiring a complete overhaul.
+By implementing the short-term solution now with the optimized data structure and planning for the gradual transition to the long-term architecture, the newsletter system can grow smoothly with the business without disrupting operations or requiring a complete overhaul. The approach balances immediate needs (October 30 deadline) with long-term considerations like data ownership, scalability, and AI-readiness.
