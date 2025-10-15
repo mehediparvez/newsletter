@@ -72,24 +72,168 @@ This column-based structure is efficient because:
 **A. Initial Setup**:
 
 1. Create a Master Portfolio Sheet to aggregate all member portfolio data
-2. Write an Apps Script to read all member sheets once and populate the master sheet
-3. Set up change triggers on member sheets to update the master when changes occur
+2. Create a "Member Registry" tab within the Master Sheet to track all member sheets
+3. Write an Apps Script project attached to the Master Portfolio Sheet to manage all synchronization
+4. Configure the Apps Script to read all member sheets from the registry and populate the master sheet
+5. Set up a system for registering new member sheets and adding them to the registry
 
-**B. Trigger-Based Sync**:
+**B. Member Sheet Registry**:
+
+The Member Registry tab in the Master Sheet keeps track of all individual member sheets:
+
+```
+| SheetID                                | MemberEmail       | SheetName       | LastSynced          | SyncStatus |
+|---------------------------------------|-------------------|----------------|---------------------|------------|
+| 1Abc...XYZ                            | john@example.com  | Portfolio      | 2025-10-15T14:30:00 | SUCCESS    |
+| 2Def...123                            | sarah@example.com | Portfolio      | 2025-10-15T14:35:00 | SUCCESS    |
+```
+
+This registry enables:
+- Dynamic discovery of all member sheets without hardcoding IDs
+- Tracking sync status for each member sheet
+- Adding new member sheets without modifying code
+- Admin interface for managing member sheets and troubleshooting
+
+**C. Apps Script Project Structure**:
+
+The synchronization logic resides in a single Apps Script project that is bound to the Master Portfolio Sheet:
+
+1. **Central Management**: All code is maintained in one place for easier updates and maintenance
+2. **Permission Model**: The script runs with the permissions of the Master Portfolio Sheet owner
+3. **Member Sheet Registry**: A separate sheet tab in the Master Sheet tracks all member sheets
+4. **Dynamic Sheet Access**: No hardcoding of sheet IDs - all member sheets are discovered and tracked in the registry
+5. **Cross-Sheet Access**: The script has read access to member sheets and read/write access to the Master Sheet
+
+**D. Member Sheet Registration**:
+
+There are two approaches to handle member sheet registration:
+
+1. **Registration Form**:
+```javascript
+// Simple web app for registering member sheets
+function doGet() {
+  const html = HtmlService.createHtmlOutputFromFile('RegistrationForm')
+    .setTitle('Register Member Portfolio');
+  return html;
+}
+
+function registerMemberSheet(memberEmail, sheetUrl) {
+  try {
+    const sheet = SpreadsheetApp.openByUrl(sheetUrl);
+    const sheetId = sheet.getId();
+    const sheetName = sheet.getSheets()[0].getName();
+    
+    // Add to registry
+    const masterSheet = SpreadsheetApp.getActiveSpreadsheet();
+    const registrySheet = masterSheet.getSheetByName("Member Registry");
+    registrySheet.appendRow([
+      sheetId,
+      memberEmail,
+      sheetName,
+      new Date().toISOString(),
+      "PENDING"
+    ]);
+    
+    // Perform initial sync
+    const assets = extractAssets(sheet.getSheets()[0]);
+    const portfolioSheet = masterSheet.getSheetByName("Portfolios");
+    updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
+    
+    // Update status
+    const lastRow = registrySheet.getLastRow();
+    registrySheet.getRange(lastRow, 5).setValue("SUCCESS");
+    
+    return { success: true, message: "Member sheet registered successfully" };
+  } catch (e) {
+    return { success: false, message: "Error: " + e.message };
+  }
+}
+```
+
+2. **Folder Monitor**:
+```javascript
+// Scheduled function to scan a specific folder for new member sheets
+function scanMemberSheetFolder() {
+  const folder = DriveApp.getFolderById(MEMBER_FOLDER_ID);
+  const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
+  const registrySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Member Registry");
+  const registeredIds = getRegisteredSheetIds(registrySheet);
+  
+  while (files.hasNext()) {
+    const file = files.next();
+    const sheetId = file.getId();
+    
+    // Skip already registered sheets
+    if (registeredIds.includes(sheetId)) continue;
+    
+    try {
+      const sheet = SpreadsheetApp.openById(sheetId);
+      const memberEmail = extractMemberEmail(sheet);
+      
+      if (memberEmail) {
+        // Register new sheet
+        registrySheet.appendRow([
+          sheetId,
+          memberEmail,
+          sheet.getName(),
+          new Date().toISOString(),
+          "AUTO-REGISTERED"
+        ]);
+        
+        // Perform initial sync
+        const assets = extractAssets(sheet.getSheets()[0]);
+        const portfolioSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Portfolios");
+        updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
+      }
+    } catch (e) {
+      Logger.log(`Error processing sheet ${sheetId}: ${e.message}`);
+    }
+  }
+}
+```
+
+**E. Trigger-Based Sync**:
 
 ```javascript
-// Triggered when a member sheet is edited
+// This code resides in the Apps Script project attached to the Master Portfolio Sheet
+// Triggered when a registered member sheet is edited
 function onMemberSheetEdit(e) {
   const sheet = e.source.getActiveSheet();
   const sheetId = sheet.getId();
-  const memberEmail = getMemberEmail(sheet); // Extract from sheet properties or content
+  
+  // Check if this is a registered member sheet
+  const masterSheet = SpreadsheetApp.getActiveSpreadsheet();
+  const registrySheet = masterSheet.getSheetByName("Member Registry");
+  const registryData = registrySheet.getDataRange().getValues();
+  
+  let memberEmail = null;
+  for (let i = 1; i < registryData.length; i++) {
+    if (registryData[i][0] === sheetId) {
+      memberEmail = registryData[i][1];
+      break;
+    }
+  }
+  
+  if (!memberEmail) {
+    Logger.log(`Unregistered sheet edited: ${sheetId}`);
+    return;
+  }
   
   // Get all assets from this sheet
   const assets = extractAssets(sheet);
   
-  // Update the master sheet
-  const masterSheet = SpreadsheetApp.openById(MASTER_SHEET_ID).getSheetByName("Portfolios");
-  updateMasterPortfolio(masterSheet, memberEmail, assets, sheetId);
+  // Update the master sheet (accessible within the same project)
+  const portfolioSheet = masterSheet.getSheetByName("Portfolios");
+  updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
+  
+  // Update sync timestamp in registry
+  for (let i = 1; i < registryData.length; i++) {
+    if (registryData[i][0] === sheetId) {
+      registrySheet.getRange(i+1, 4).setValue(new Date().toISOString());
+      registrySheet.getRange(i+1, 5).setValue("SUCCESS");
+      break;
+    }
+  }
   
   // Log the sync
   Logger.log(`Updated portfolio for ${memberEmail} with ${assets.length} assets`);
@@ -105,6 +249,9 @@ function onMemberSheetEdit(e) {
 3. Create a fast lookup data structure for research updates
 
 ```javascript
+// This function runs in the Apps Script project attached to the Master Portfolio Sheet
+// Typically triggered weekly by a time-based trigger
+// Uses the Member Registry to track delivery status
 function generateWeeklyNewsletters() {
   // Get research data for current week
   const researchSheet = SpreadsheetApp.openById(RESEARCH_SHEET_ID).getActiveSheet();
@@ -298,7 +445,7 @@ A critical challenge in the short-term solution is handling concurrent updates t
 
 #### Recommended Approach:
 
-1. **Implement a Queue System**:
+1. **Implement a Queue System** (in the Master Sheet Apps Script project):
    ```javascript
    function queueSheetSync(sheetId, memberEmail) {
      // Instead of directly updating the master sheet
@@ -312,6 +459,7 @@ A critical challenge in the short-term solution is handling concurrent updates t
    }
    
    // Separate time-triggered function that runs every 5 minutes
+   // This runs in the Master Sheet Apps Script project
    function processSyncQueue() {
      const queueSheet = SpreadsheetApp.openById(QUEUE_SHEET_ID).getSheetByName("SyncQueue");
      const queue = queueSheet.getDataRange().getValues();
@@ -805,6 +953,7 @@ This document outlines two complementary approaches to the personalized newslett
 1. **Short-Term Solution**: Google Sheets + Apps Script + HubSpot for 1,000 members
    - Quick to implement before the October 30 deadline
    - Leverages existing Google Sheets infrastructure
+   - Dynamic member sheet registry for easy onboarding
    - Suitable for the current scale of operations
    - Efficient column-based Master Sheet structure
 
