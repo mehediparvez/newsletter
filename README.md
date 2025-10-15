@@ -7,7 +7,7 @@ This document outlines both short-term and long-term solutions for developing a 
 ### Key Requirements
 - **Deadline**: October 30, 2025
 - **Current User Base**: ~1,000 members
-- **Future Scale**: Up to 30,000+ members
+- **Future Scale**: Up to 30,000+ 
 - **Data Structure**:
   - Each member has their own Google Sheet with portfolio information
   - Research team aggregates updates in a central sheet
@@ -23,6 +23,59 @@ This document outlines both short-term and long-term solutions for developing a 
 The short-term solution leverages Google Sheets, Google Apps Script, and HubSpot to create an MVP that meets the October 30 deadline while handling up to 1,000 members efficiently.
 
 ![Short-Term Architecture](https://i.imgur.com/example1.png) *(Diagram placeholder)*
+
+### Step-by-Step System Workflow
+
+The system follows a structured workflow as illustrated in the flowchart. Each step has specific technical implementations and considerations:
+
+#### First Step: Customer Portfolio Sheet Access
+The workflow begins with accessing Customer Portfolio Sheets, which contain each member's investment assets.
+- **Implementation**: Dedicated Google Drive folder structure with proper permissions
+- **Technical Component**: Folder monitoring system using Google Drive API
+- **Key Consideration**: Secure access control while maintaining scalability
+- **Relation to Architecture**: Forms the input layer of the system
+
+#### Second Step: Research Sheet Access
+In parallel with the first step, the system accesses the Research Sheet maintained by the research team.
+- **Implementation**: Centralized Google Sheet with standardized structure
+- **Technical Component**: Direct API access to Research Updates Sheet
+- **Key Consideration**: Maintaining a consistent format for processing
+- **Relation to Architecture**: Provides the content data for personalization
+
+#### Third Step: Sync Portfolio Data
+The system synchronizes portfolio data from Customer Sheets into the Master Portfolio Sheet.
+- **Implementation**: Hybrid approach combining metadata monitoring and selective triggers
+- **Technical Component**: Google Apps Script synchronization engine
+- **Key Consideration**: Handling concurrent updates and maintaining data integrity
+- **Relation to Architecture**: Core data aggregation layer connecting inputs to processing
+
+#### Fourth Step: Match Data
+This critical step matches each member's portfolio assets against relevant research updates.
+- **Implementation**: Efficient lookup algorithms with in-memory data structures
+- **Technical Component**: Newsletter generation script with optimized matching logic
+- **Key Consideration**: Performance optimization for large data volumes
+- **Relation to Architecture**: Central processing logic for personalization
+
+#### Fifth Step: Generate Personalized Content
+The system creates individualized newsletter content based on matching results.
+- **Implementation**: Template-based content generation with fallback mechanisms
+- **Technical Component**: HTML template engine with dynamic content insertion
+- **Key Consideration**: Content quality and consistency across all newsletters
+- **Relation to Architecture**: Transformation layer that converts data to presentable content
+
+#### Sixth Step: Send to HubSpot
+The final step involves delivering the personalized content to HubSpot for email distribution.
+- **Implementation**: API integration with proper authentication and error handling
+- **Technical Component**: HubSpot Single Send API connector
+- **Key Consideration**: Delivery reliability and compliance with rate limits
+- **Relation to Architecture**: Output layer that delivers content to members
+
+#### Failure Handling
+Throughout the workflow, each step includes comprehensive error detection and recovery:
+- **Implementation**: Multi-tiered retry mechanism with exponential backoff
+- **Technical Component**: Distributed logging and monitoring system
+- **Key Consideration**: Maintaining system resilience during partial failures
+- **Relation to Architecture**: Cross-cutting concern across all components
 
 #### Technology Selection Rationale
 
@@ -50,11 +103,11 @@ Google Apps Script was selected for the short-term solution due to its native in
 
 #### Key Components:
 
-1. **Member Portfolio Sheets**: Individual Google Sheets for each member containing their asset lists
-2. **Master Portfolio Sheet**: Centralized sheet that aggregates all member data
-3. **Research Updates Sheet**: Weekly research data maintained by the research team
-4. **Google Apps Script**: Scripts for data synchronization and newsletter generation
-5. **HubSpot API**: Email delivery with personalization and unsubscribe tracking
+1. **Member Portfolio Sheets**: Individual Google Sheets for each member containing their asset lists (First Step)
+2. **Research Updates Sheet**: Weekly research data maintained by the research team (Second Step)
+3. **Master Portfolio Sheet**: Centralized sheet that aggregates all member data (Third Step)
+4. **Google Apps Script**: Scripts for data synchronization and newsletter generation (Fourth and Fifth Steps)
+5. **HubSpot API**: Email delivery with personalization and unsubscribe tracking (Sixth Step)
 
 ### Low-Level Design
 
@@ -68,7 +121,7 @@ Google Apps Script was selected for the short-term solution due to its native in
 |           | ETH      |           |       | Memecoins |
 ```
 
-**Research Updates Sheet**
+**Research Updates Sheet** (Second Step: Research Sheet Access)
 ```
 | Assets | Default Message                        | Oct 13 | Oct 20 | Oct 27    | Nov 3 |
 |--------|---------------------------------------|--------|--------|-----------|-------|
@@ -130,25 +183,96 @@ The synchronization logic resides in a single Apps Script project that is bound 
 4. **Dynamic Sheet Access**: No hardcoding of sheet IDs - all member sheets are discovered and tracked in the registry
 5. **Cross-Sheet Access**: The script has read access to member sheets and read/write access to the Master Sheet
 
-**D. Member Sheet Registration - Optimized Folder Monitor Approach**:
+**D. Research Sheet Access Implementation**:
 
-The system uses a highly optimized folder monitoring approach for member sheet registration aligned with the client's workflow diagram. This process corresponds to the starting point in the workflow where Customer Portfolio Sheets are first accessed.
+This component implements the **Second Step: Research Sheet Access** from the workflow diagram, providing the research content that will be matched with member portfolios.
 
 **Implementation Approach:**
-1. **Tiered Scanning System**: 
-   - Daily full scans of the member folder to catch any missed sheets
-   - Frequent incremental scans that only check recently modified files
-   - Smart timestamp tracking to minimize redundant processing
+1. **Research Data Structure**:
+   - Maintain a consistent columnar format with assets in rows and dates in columns
+   - Include default messages for assets with no updates in a given week
+   - Support rich text formatting for complex content
 
-2. **Priority-Based Processing**:
-   - Process newest sheets first for better user experience
-   - Maintain a persistent priority queue for failed or important sheets
-   - Implement throttling to avoid Google API rate limits
+2. **Access Pattern**:
+   - Direct sheet access using Google Sheets API via Apps Script
+   - Scheduled weekly retrieval timed with research team updates
+   - Read-only operations to prevent accidental modifications
+   - Versioning support to track content changes over time
 
-3. **Batch Processing Logic**: 
-   - Process files in small batches (25-50 at a time)
-   - Schedule automatic continuation for large folders
-   - Use exponential backoff when approaching quota limits
+3. **Optimization Strategy**:
+   - Cache research data during newsletter generation cycles
+   - Implement change detection to process only updated content
+   - Use batch retrieval to minimize API calls
+   - Apply column filtering to retrieve only relevant date ranges
+
+**Limitations and Constraints:**
+- Requires consistent formatting discipline from research team
+- Content size limitations per cell (~50,000 characters)
+- Potential performance impact with very large research datasets
+- Manual intervention needed for special formatting or attachments
+- Weekly synchronization window dependent on research team schedule
+
+**E. Member Sheet Registration - Optimized Folder Monitor Approach**:
+
+The system uses a highly optimized folder monitoring approach specifically for collecting new member spreadsheets. This approach implements the **First Step: Customer Portfolio Sheet Access** in the workflow diagram, focusing on efficient discovery and registration of member sheets.
+
+**Folder Scanning Implementation for New Member Collection:**
+1. **Dedicated Member Folder Structure**: 
+   - Establish a centralized Google Drive folder specifically for member spreadsheets
+   - Structure with optional subfolder organization (e.g., by account manager or joining date)
+   - Apply proper permission model for secure access control
+   - Set up monitoring process focused on this specific folder structure
+
+2. **New Member Discovery Process**:
+   - Implement scheduled scans to identify newly added spreadsheets
+   - Use Drive API search queries with specific MIME type filtering for spreadsheets
+   - Apply server-side sorting by creation date to prioritize newest members
+   - Compare against registry to identify truly new additions
+
+3. **Metadata-Based Processing**:
+   - Use file metadata (creation date, last modified date) to identify new members
+   - Extract owner and sharing information for permission validation
+   - Inspect sheet properties to confirm it's a valid member portfolio
+   - Prioritize processing based on creation recency
+
+**Change Detection Approaches Comparison**:
+
+**Approach 1: Individual Sheet Edit Triggers**
+- **Implementation**: Install Apps Script triggers on each member sheet that fire on edit events
+- **Pros**:
+  - Real-time updates as changes occur
+  - Minimal processing overhead for unchanged sheets
+  - Direct access to exact cells that were modified
+  - Can access full context of the edit (user, timestamp, range)
+- **Cons**:
+  - Requires installing triggers on every sheet (setup complexity)
+  - Each member sheet needs custom code or permissions
+  - Limited by Apps Script quotas for simultaneous triggers
+  - May miss changes if trigger installation fails
+
+**Approach 2: Folder Metadata Monitoring**
+- **Implementation**: Periodically scan the member folder to detect modified files via metadata
+- **Pros**:
+  - Centralized code and permissions in one script
+  - No need to modify individual member sheets
+  - Works with any sheet regardless of structure or permissions
+  - Can detect sheet deletions/moves/renames
+- **Cons**:
+  - Not real-time (depends on scanning interval)
+  - Higher overhead as all files must be checked
+  - Requires additional API calls to fetch actual sheet content
+  - Can't detect which specific cells changed without comparing versions
+
+**Recommended Approach**: A hybrid solution is optimal for most scenarios:
+- **Folder monitoring** for new member sheet discovery and batch processing
+- **Edit triggers** for existing high-priority members requiring real-time updates
+- **Metadata scanning** as a fallback to ensure no changes are missed
+
+For the current scenario with up to 1,000 members, folder metadata monitoring is recommended as the primary approach due to:
+- Simplified management with centralized code
+- Better scalability as the number of sheets grows
+- More reliable detection of all types of changes
+- Less dependency on individual sheet configurations
 
 **Optimizations:**
 - Store last scan timestamps to enable efficient incremental processing
@@ -165,51 +289,109 @@ The system uses a highly optimized folder monitoring approach for member sheet r
 - Manual intervention may be required for persistent processing errors
 ```
 
-**E. Trigger-Based Sync**:
+**E. Multi-Approach Sync Strategy**:
 
-This component handles the "Sync portfolio data from Customer Sheets" step in the client's flowchart, triggering whenever a member updates their portfolio.
+This component implements the **Third Step: Sync Portfolio Data** in the workflow diagram, with an enhanced focus on comparing approaches for tracking changes in member spreadsheets that contain multiple sheets, where one specific sheet contains the asset data.
+
+**Approach 1: Trigger-Based Change Detection**
 
 **Implementation Approach:**
-1. **Event-Based Architecture**: 
-   - Install change triggers on all registered member sheets
-   - Automatically detect when a portfolio is modified
-   - Execute synchronization only when necessary
+1. **Selective Sheet Trigger Installation**: 
+   - Install edit triggers specifically on the asset data sheet within each member spreadsheet
+   - Configure trigger to monitor only relevant ranges containing portfolio data
+   - Execute synchronization only when changes occur in asset-related cells
 
-2. **Data Extraction Process**:
-   - Parse the member's Google Sheet to identify their assets
-   - Extract relevant portfolio data using column mappings
+2. **Targeted Data Extraction Process**:
+   - Access the exact sheet containing asset information
+   - Extract only modified portfolio data using event object information
+   - Apply change detection to identify specifically which assets were modified
    - Transform data into the standardized format for the Master Sheet
 
-3. **Master Sheet Update Process**:
-   - Locate or create the member's row in the Master Portfolio Sheet
-   - Update asset columns with binary indicators (1=has asset, 0=doesn't have)
-   - Maintain metadata including last sync time and source URL
+3. **Real-Time Update Benefits**:
+   - Immediate synchronization when changes occur
+   - Direct access to edit event context (user, timestamp, modified range)
+   - Fine-grained control over which changes trigger updates
+   - Ability to implement validation at the point of change
 
 **Optimizations:**
-- Use registry lookups to quickly validate registered sheets
-- Implement change detection to avoid unnecessary processing
-- Apply locking mechanisms to prevent concurrent update conflicts
-- Use batch writes when updating the master sheet
-- Maintain audit logs for troubleshooting and recovery
+- Use edit event ranges to process only changed areas
+- Apply debouncing to handle rapid successive edits
+- Implement change significance detection to filter minor edits
+- Cache previous state to compute precise differences
 
-**Limitations and Constraints:**
-- Google Apps Script triggers have quotas that limit activation frequency
-- Simultaneous edits across many sheets can cause trigger queue backlogs
-- Each trigger execution has independent authentication context
-- Script may need to handle permission issues if sheet owners differ
-- Registry must be kept consistent to ensure proper sheet tracking
+**Limitations:**
+- Requires managing triggers across hundreds of spreadsheets
+- Each member spreadsheet needs appropriate script permissions
+- Complex to maintain consistent trigger behavior across all sheets
+- Higher risk of hitting Apps Script quotas with many simultaneous edits
+- Limited visibility into external changes (e.g., API modifications)
+
+**Approach 2: Metadata-Based Change Detection**
+
+**Implementation Approach:**
+1. **Centralized Monitoring Logic**: 
+   - Scan the members folder on a scheduled basis (e.g., every 5-15 minutes)
+   - Use Drive API to fetch metadata for all spreadsheets in the folder
+   - Compare modification timestamps against registry records
+   - Identify spreadsheets with potential changes since last scan
+
+2. **Selective Content Retrieval**:
+   - Open only potentially modified spreadsheets identified from metadata
+   - Navigate directly to the specific sheet containing asset data
+   - Compare content with previously stored state or checksums
+   - Process only sheets with confirmed changes to assets
+
+3. **Batch Processing Advantages**:
+   - Consolidated processing reduces overall API usage
+   - Centralized code base with simpler maintenance
+   - Unified permission model with admin-level access
+   - Ability to implement prioritization for important members
+   - Built-in retry mechanism for temporarily inaccessible sheets
+
+**Optimizations:**
+- Use modification timestamps to process only recently changed sheets
+- Implement content hashing to quickly detect actual data changes
+- Apply intelligent batching based on file change frequency patterns
+- Leverage server-side filtering to reduce API calls
+
+**Limitations:**
+- Not real-time (delay based on scanning frequency)
+- Higher overhead for initial metadata retrieval
+- Cannot determine exact cells changed without content comparison
+- Requires additional processing to identify which sheets changed within each spreadsheet
+
+**Recommended Hybrid Implementation:**
+
+For this specific use case with multi-sheet member spreadsheets, we recommend a hybrid approach:
+
+1. **Primary: Metadata-Based Monitoring**
+   - Schedule frequent scans (every 5-15 minutes) of the members folder
+   - Use Drive API's efficient metadata queries to identify potentially changed spreadsheets
+   - Process only spreadsheets modified since the last scan
+
+2. **Secondary: Selective Trigger Application**
+   - Install edit triggers only on high-priority member spreadsheets
+   - Configure triggers to monitor specifically the asset data sheet
+   - Use trigger-based approach as a complement for time-sensitive updates
+
+3. **Integration Layer**
+   - Maintain a unified sync queue for both approaches
+   - Apply deduplication to prevent redundant processing
+   - Implement priority-based processing for the queue
+
+This hybrid approach provides the scalability benefits of metadata scanning while allowing real-time updates for critical members, offering the best balance between performance, reliability, and resource usage when managing up to 1,000 member spreadsheets.
 ```
 
 #### 3. Newsletter Generation Process
 
-This process covers the central portion of the client's flowchart, where Customer Portfolio data is matched with Research Updates to generate personalized newsletters.
+This process covers the **Fourth Step: Match Data** and **Fifth Step: Generate Personalized Content** in the workflow diagram, where Customer Portfolio data is matched with Research Updates to generate personalized newsletters.
 
 **A. Weekly Newsletter Workflow**:
 
 **Implementation Approach:**
-1. **Data Collection**:
-   - Retrieve current week's research data from the Research Updates Sheet
-   - Load Master Portfolio Sheet containing all member asset information
+1. **Data Collection** (Second Step + Third Step):
+   - Retrieve current week's research data from the Research Updates Sheet (Second Step)
+   - Load Master Portfolio Sheet containing all member asset information (Third Step)
    - Create optimized lookup structures for fast data matching
 
 2. **Matching Process**:
@@ -260,7 +442,7 @@ This process covers the central portion of the client's flowchart, where Custome
 
 #### 4. HubSpot Integration
 
-This component handles the "Send Email Address + Email Content to HubSpot Sender" portion of the client's flowchart, delivering personalized newsletters to members.
+This component implements the **Sixth Step: Send to HubSpot** in the workflow diagram, delivering personalized newsletters to members through the HubSpot email platform.
 
 **Implementation Approach:**
 1. **API Integration**:
@@ -298,7 +480,7 @@ This component handles the "Send Email Address + Email Content to HubSpot Sender
 
 #### 5. Error Handling and Retry Mechanism
 
-This component handles failure recovery and ensures reliable delivery across the entire workflow, especially crucial for the "Pass" or "Fail" decision points in the client's flowchart.
+This component handles the **Failure Handling** aspects shown as "Pass" or "Fail" decision points throughout the workflow diagram, ensuring reliable operation and recovery from errors at each step.
 
 **Implementation Approach:**
 1. **Comprehensive Logging**:
