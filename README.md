@@ -2,28 +2,28 @@
 
 ## Executive Summary
 
-This document outlines both short-term and long-term solutions for developing a personalized newsletter system that matches research updates with members' investment portfolios. The system will send weekly emails to members containing only the research updates relevant to assets in their portfolios.
+A system to deliver personalized investment newsletters by matching research updates with members' portfolio assets. Weekly emails will contain only relevant research for each member's investments.
 
 ### Overview
-There are will be spreadsheet for each memeber with multiple sheets and one of them will be "Assets in portfolio" which will contain the email of the memeber and the assets he is interested or have as cryptocurrency , associates, notes, interest. And there are another spreadsheets contianing the researched data for each assets weekly. And we will create an central spreadsheets to centralize the data about each member assets.
+Each member has a spreadsheet containing portfolio assets. Research data is maintained in a separate sheet with weekly updates for each asset. A central sheet aggregates member data for processing.
 
 ### Key Requirements
 - **Deadline**: October 30, 2025
 - **Current User Base**: ~1,000 members
-- **Future Scale**: will be more memebers
+- **Future Scale**: Expandable for growth
 - **Data Structure**:
-  - Each member has their own Google Sheet with portfolio information
-  - Research team keeps record of the updates in a research sheet
-  - Weekly newsletters must contain personalized content 
+  - Member portfolio information in Google Sheets
+  - Centralized research updates sheet
+  - Personalized weekly newsletter content
 - **Technology Constraints**:
-  - Must use Google Sheets for member portfolios
-  - Preference for HubSpot for email delivery in short-term
+  - Google Sheets for data storage
+  - HubSpot for email delivery
 
-## Short-Term Solution (1,000 Members)
+## Short-Term Solution
 
 ### High-Level Design
 
-The short-term solution leverages Google Sheets, Google Apps Script, and HubSpot to create an MVP that meets the October 30 deadline while handling up to 1,000 members efficiently.
+The short-term solution leverages Google Sheets, Google Apps Script, and HubSpot to create an MVP that meets the deadline while handling up to 1,000 members efficiently.
 
 
 
@@ -143,211 +143,53 @@ This enhanced registry enables:
 
 **C. Apps Script Project Structure**:
 
-The synchronization logic resides in a single Apps Script project that is bound to the Master Portfolio Sheet:
+A single Apps Script project attached to the Master Portfolio Sheet manages all synchronization functions:
 
-1. **Central Management**: All code is maintained in one place for easier updates and maintenance
-2. **Permission Model**: The script runs with the permissions of the Master Portfolio Sheet owner
-3. **Member Sheet Registry**: A separate sheet tab in the Master Sheet tracks all member sheets
-4. **Dynamic Sheet Access**: No hardcoding of sheet IDs - all member sheets are discovered and tracked in the registry
-5. **Cross-Sheet Access**: The script has read access to member sheets and read/write access to the Master Sheet
+- Centralized codebase with unified permissions
+- Utilizes the Member Registry to dynamically access all member sheets
+- Maintains read access to member sheets and read/write access to the Master Sheet
 
-**D. Research Sheet Access Implementation**:
 
-This component implements the **Second Step: Research Sheet Access** from the workflow diagram, providing the research content that will be matched with member portfolios.
+**E. Member Sheet Registration - Simple Folder Monitoring**:
 
-**Implementation Approach:**
-1. **Research Data Structure**:
-   - Maintain a consistent columnar format with assets in rows and dates in columns
-   - Include default messages for assets with no updates in a given week
-   - Support rich text formatting for complex content
+The system uses a straightforward folder monitoring approach for collecting new member spreadsheets. This implements the **First Step: Customer Portfolio Sheet Access** in the workflow diagram.
 
-2. **Access Pattern**:
-   - Direct sheet access using Google Sheets API via Apps Script
-   - Scheduled weekly retrieval timed with research team updates
-   - Read-only operations to prevent accidental modifications
-   - Versioning support to track content changes over time
+**Folder-Based Member Sheet Discovery:**
+1. **Dedicated Google Drive Folder**: 
+   - All member spreadsheets will be stored in a central Google Drive folder
+   - Basic permission controls ensure only authorized users can add files
 
-3. **Optimization Strategy**:
-   - Cache research data during newsletter generation cycles
-   - Implement change detection to process only updated content
-   - Use batch retrieval to minimize API calls
-   - Apply column filtering to retrieve only relevant date ranges
+2. **Daily Scanning Process**:
+   - A scheduled script runs daily to check for new spreadsheets in the folder
+   - New files are automatically registered in the Member Registry
+   - Once registered, member data becomes available for processing
 
-**Limitations and Constraints:**
-- Requires consistent formatting discipline from research team
-- Content size limitations per cell (~50,000 characters)
-- Potential performance impact with very large research datasets
-- Manual intervention needed for special formatting or attachments
-- Weekly synchronization window dependent on research team schedule
+**F. Simple Synchronization Process**:
 
-**E. Member Sheet Registration - Optimized Folder Monitor Approach**:
+This component implements the **Third Step: Sync Portfolio Data** in the workflow diagram. A straightforward daily synchronization process keeps the Master Portfolio Sheet up to date with all member data.
 
-The system uses a highly optimized folder monitoring approach specifically for collecting new member spreadsheets. This approach implements the **First Step: Customer Portfolio Sheet Access** in the workflow diagram, focusing on efficient discovery and registration of member sheets.
+**Daily Sync Process Implementation:**
 
-**Folder Scanning Implementation for New Member Collection:**
-1. **Dedicated Member Folder Structure**: 
-   - Establish a centralized Google Drive folder specifically for member spreadsheets
-   - Structure with optional subfolder organization (e.g., by account manager or joining date)
-   - Apply proper permission model for secure access control
-   - Set up monitoring process focused on this specific folder structure
+1. **Scheduled Daily Script**:
+   - A Google Apps Script runs once daily on a time-based trigger
+   - The script processes both new and existing member spreadsheets
 
-2. **New Member Discovery Process**:
-   - Implement scheduled scans to identify newly added spreadsheets
-   - Use Drive API search queries with specific MIME type filtering for spreadsheets
-   - Apply server-side sorting by creation date to prioritize newest members
-   - Compare against registry to identify truly new additions
+2. **Processing New Members**:
+   - Identifies newly added spreadsheets in the designated folder
+   - Extracts member email and asset information
+   - Adds new members to the Master Portfolio Sheet
 
-3. **Metadata-Based Processing**:
-   - Use file metadata (creation date, last modified date) to identify new members
-   - Extract owner and sharing information for permission validation
-   - Inspect sheet properties to confirm it's a valid member portfolio
-   - Prioritize processing based on creation recency
+3. **Checking for Changes**:
+   - For existing members, opens each spreadsheet
+   - Reviews the specific sheet containing asset information
+   - Updates the Master Portfolio Sheet when changes are detected
 
-**Change Detection Approaches Comparison**:
+4. **Simple Batch Processing**:
+   - Processes files in small batches to avoid timeout issues
+   - Maintains basic logs of sync activity
+   - Flags any errors for manual review
 
-**Approach 1: Individual Sheet Edit Triggers**
-- **Implementation**: Install Apps Script triggers on each member sheet that fire on edit events
-- **Pros**:
-  - Real-time updates as changes occur
-  - Minimal processing overhead for unchanged sheets
-  - Direct access to exact cells that were modified
-  - Can access full context of the edit (user, timestamp, range)
-- **Cons**:
-  - Requires installing triggers on every sheet (setup complexity)
-  - Each member sheet needs custom code or permissions
-  - Limited by Apps Script quotas for simultaneous triggers
-  - May miss changes if trigger installation fails
-
-**Approach 2: Folder Metadata Monitoring**
-- **Implementation**: Periodically scan the member folder to detect modified files via metadata
-- **Pros**:
-  - Centralized code and permissions in one script
-  - No need to modify individual member sheets
-  - Works with any sheet regardless of structure or permissions
-  - Can detect sheet deletions/moves/renames
-- **Cons**:
-  - Not real-time (depends on scanning interval)
-  - Higher overhead as all files must be checked
-  - Requires additional API calls to fetch actual sheet content
-  - Can't detect which specific cells changed without comparing versions
-
-**Recommended Approach**: A hybrid solution is optimal for most scenarios:
-- **Folder monitoring** for new member sheet discovery and batch processing
-- **Edit triggers** for existing high-priority members requiring real-time updates
-- **Metadata scanning** as a fallback to ensure no changes are missed
-
-For the current scenario with up to 1,000 members, folder metadata monitoring is recommended as the primary approach due to:
-- Simplified management with centralized code
-- Better scalability as the number of sheets grows
-- More reliable detection of all types of changes
-- Less dependency on individual sheet configurations
-
-**Optimizations:**
-- Store last scan timestamps to enable efficient incremental processing
-- Track sheet metadata (creation/modification dates) to identify only changed files
-- Implement caching to avoid redundant Google Drive API calls
-- Apply server-side filtering and sorting via Drive API query parameters
-- Use registry-based approach to avoid re-processing already registered sheets
-
-**Limitations and Constraints:**
-- Google Apps Script's 6-minute execution timeout requires careful batching
-- Drive API has rate limits that necessitate controlled processing speeds
-- Each file access requires a separate API call, which can be expensive at scale
-- Large member folders (approaching 1,000) will need multiple scan batches
-- Manual intervention may be required for persistent processing errors
-```
-
-**E. Multi-Approach Sync Strategy**:
-
-This component implements the **Third Step: Sync Portfolio Data** in the workflow diagram, with an enhanced focus on comparing approaches for tracking changes in member spreadsheets that contain multiple sheets, where one specific sheet contains the asset data.
-
-**Approach 1: Trigger-Based Change Detection**
-
-**Implementation Approach:**
-1. **Selective Sheet Trigger Installation**: 
-   - Install edit triggers specifically on the asset data sheet within each member spreadsheet
-   - Configure trigger to monitor only relevant ranges containing portfolio data
-   - Execute synchronization only when changes occur in asset-related cells
-
-2. **Targeted Data Extraction Process**:
-   - Access the exact sheet containing asset information
-   - Extract only modified portfolio data using event object information
-   - Apply change detection to identify specifically which assets were modified
-   - Transform data into the standardized format for the Master Sheet
-
-3. **Real-Time Update Benefits**:
-   - Immediate synchronization when changes occur
-   - Direct access to edit event context (user, timestamp, modified range)
-   - Fine-grained control over which changes trigger updates
-   - Ability to implement validation at the point of change
-
-**Optimizations:**
-- Use edit event ranges to process only changed areas
-- Apply debouncing to handle rapid successive edits
-- Implement change significance detection to filter minor edits
-- Cache previous state to compute precise differences
-
-**Limitations:**
-- Requires managing triggers across hundreds of spreadsheets
-- Each member spreadsheet needs appropriate script permissions
-- Complex to maintain consistent trigger behavior across all sheets
-- Higher risk of hitting Apps Script quotas with many simultaneous edits
-- Limited visibility into external changes (e.g., API modifications)
-
-**Approach 2: Metadata-Based Change Detection**
-
-**Implementation Approach:**
-1. **Centralized Monitoring Logic**: 
-   - Scan the members folder on a scheduled basis (e.g., every 5-15 minutes)
-   - Use Drive API to fetch metadata for all spreadsheets in the folder
-   - Compare modification timestamps against registry records
-   - Identify spreadsheets with potential changes since last scan
-
-2. **Selective Content Retrieval**:
-   - Open only potentially modified spreadsheets identified from metadata
-   - Navigate directly to the specific sheet containing asset data
-   - Compare content with previously stored state or checksums
-   - Process only sheets with confirmed changes to assets
-
-3. **Batch Processing Advantages**:
-   - Consolidated processing reduces overall API usage
-   - Centralized code base with simpler maintenance
-   - Unified permission model with admin-level access
-   - Ability to implement prioritization for important members
-   - Built-in retry mechanism for temporarily inaccessible sheets
-
-**Optimizations:**
-- Use modification timestamps to process only recently changed sheets
-- Implement content hashing to quickly detect actual data changes
-- Apply intelligent batching based on file change frequency patterns
-- Leverage server-side filtering to reduce API calls
-
-**Limitations:**
-- Not real-time (delay based on scanning frequency)
-- Higher overhead for initial metadata retrieval
-- Cannot determine exact cells changed without content comparison
-- Requires additional processing to identify which sheets changed within each spreadsheet
-
-**Recommended Hybrid Implementation:**
-
-For this specific use case with multi-sheet member spreadsheets, we recommend a hybrid approach:
-
-1. **Primary: Metadata-Based Monitoring**
-   - Schedule frequent scans (every 5-15 minutes) of the members folder
-   - Use Drive API's efficient metadata queries to identify potentially changed spreadsheets
-   - Process only spreadsheets modified since the last scan
-
-2. **Secondary: Selective Trigger Application**
-   - Install edit triggers only on high-priority member spreadsheets
-   - Configure triggers to monitor specifically the asset data sheet
-   - Use trigger-based approach as a complement for time-sensitive updates
-
-3. **Integration Layer**
-   - Maintain a unified sync queue for both approaches
-   - Apply deduplication to prevent redundant processing
-   - Implement priority-based processing for the queue
-
-This hybrid approach provides the scalability benefits of metadata scanning while allowing real-time updates for critical members, offering the best balance between performance, reliability, and resource usage when managing up to 1,000 member spreadsheets.
+This simplified approach prioritizes reliability and ease of maintenance over real-time updates, which is appropriate for the weekly newsletter use case where instant synchronization is not required.
 ```
 
 #### 3. Newsletter Generation Process
@@ -396,22 +238,6 @@ This component implements the **Sixth Step: Send to HubSpot** in the workflow di
 This component handles the **Failure Handling** aspects shown as "Pass" or "Fail" decision points throughout the workflow diagram, ensuring reliable operation and recovery from errors at each step.
 
 
-### Implementation Timeline
-
-1. **Week 1 (Oct 15-21)**:
-   - Create Master Portfolio Sheet with column-based structure
-   - Develop optimized Member Registry with enhanced metadata
-   - Implement initial sync script with locking mechanism
-   - Set up change triggers and queue system
-   - Test data synchronization for a subset of users (100-200 members)
-
-2. **Week 2 (Oct 22-30)**:
-   - Implement tiered folder scanning approach with caching
-   - Complete newsletter generation logic with batch processing
-   - Integrate with HubSpot API and implement templating
-   - Add comprehensive error handling, logging, and retry logic
-   - Stress test with simulated 1,000-member load
-   - Deploy for production use with monitoring system
 
 ### Limitations and Considerations
 
@@ -436,32 +262,20 @@ This component handles the **Failure Handling** aspects shown as "Pass" or "Fail
    - Minimizes Google Sheets' 5 million cell limit impact
    - Column-based structure allows atomic updates to a single member row, reducing concurrent update conflicts
 
-## Long-Term Solution (30,000+ Members)
+## Long-Term Solution
 
 ### High-Level Design
 
-The long-term solution transitions from Google Apps Script to a more scalable architecture using BigQuery for data storage and Amazon Pinpoint for email delivery, while still preserving Google Sheets as the input interface. This architecture ensures true data ownership and prepares the system for future AI and LLM integration.
-
-![Long-Term Architecture](https://i.imgur.com/example2.png) *(Diagram placeholder)*
+The long-term solution transitions from Google Apps Script to a more scalable architecture using BigQuery for data storage a, while still preserving Google Sheets as the input interface. This architecture ensures true data ownership and prepares the system for future AI and LLM integration.
 
 #### Technology Selection Rationale
 
-1. **BigQuery**:
+**BigQuery**:
    - Full data ownership with structured SQL access
    - Designed for analytics on large datasets
    - Unlimited scalability for growing member base
    - Strong integration with AI/ML services for future enhancements
 
-2. **Looker Studio**:
-   - Direct integration with BigQuery
-   - Custom dashboards for monitoring system performance
-   - Visual analytics for portfolio trends and newsletter effectiveness
-   - Shareable reports for stakeholders
-
-3. **Email Delivery Options**:
-   - Continue using HubSpot API as the primary solution for consistency
-   - Consider Amazon Pinpoint as a cost-effective alternative for scale
-   - Hybrid architecture provides flexibility to adapt based on cost and needs
 
 #### Key Components:
 
@@ -692,19 +506,6 @@ Unlike the short-term solution, BigQuery is designed to handle high-volume concu
 - Need to manage different API rate limits depending on chosen email service
 ```
 
-#### 4. Email Delivery Cost Considerations
-
-While we'll continue using HubSpot API as our primary delivery method for consistency, it's worth noting the cost comparison for future scaling decisions:
-
-**HubSpot API (Primary Solution)**:
-- Leverages existing HubSpot implementation from short-term solution
-- Provides consistent user experience throughout the transition
-- Includes built-in analytics and marketing features
-
-**Amazon Pinpoint (Cost-Effective Alternative)**:
-- Email sending: 30,000 × $0.0001 = $3/week ≈ $12/month
-- Endpoint targeting: 25,000 × $0.0012 = $30/month
-- **Total**: ~$42/month
 
 This represents significant potential cost savings at scale, which may be considered as member numbers grow beyond 30,000.
 
@@ -712,18 +513,15 @@ This represents significant potential cost savings at scale, which may be consid
 
 This document outlines two complementary approaches to the personalized newsletter system:
 
-1. **Short-Term Solution**: Google Sheets + Apps Script + HubSpot for 1,000 members
+1. **Short-Term Solution**: Google Sheets + Apps Script + HubSpot 
    - Quick to implement before the October 30 deadline
-   - Selected Google Apps Script over Make/n8n for speed and native integration
+   - Selected Google Apps Script over  for speed and native integration
    - Leverages existing Google Sheets infrastructure
-   - Dynamic member sheet registry for easy onboarding
    - Suitable for the current scale of operations
    - Efficient column-based Master Sheet structure
 
-2. **Long-Term Solution**: Google Sheets + BigQuery + Looker Studio for 30,000+ members
+2. **Long-Term Solution**: Google Sheets + BigQuery + HubSpot 
    - Scalable architecture that preserves Google Sheets as input interface
    - True data ownership with BigQuery as the central warehouse
-   - Advanced analytics and reporting through Looker Studio
    - Continued use of HubSpot API with option to use cost-effective alternatives if needed
    - AI/LLM-ready data structure for future enhancements
-   - Robust and maintainable for long-term growth
