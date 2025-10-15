@@ -19,8 +19,7 @@ Each member has a spreadsheet containing portfolio assets. Research data is main
   - Google Sheets for data storage
   - HubSpot for email delivery
 
-## Short-Term Solution (1,000 Members)
-
+## Short-Term Solution
 ### System Architecture & Workflow
 
 The solution leverages Google Sheets, Apps Script, and HubSpot to create an MVP that handles up to 1,000 members efficiently.
@@ -81,8 +80,7 @@ The solution leverages Google Sheets, Apps Script, and HubSpot to create an MVP 
 **Step 5: HubSpot Integration & Delivery**
 - Send personalized content to HubSpot API
 - Populate pre-configured email templates
-- Process in batches to respect API rate limits (10 req/sec)
-- Track delivery status and implement simple retry mechanism
+- Process in batches to respect API rate limits
 
 ### Limitations and Considerations
 
@@ -94,10 +92,9 @@ The solution leverages Google Sheets, Apps Script, and HubSpot to create an MVP 
 2. **Data Structure Efficiency**:
    - Column-based Master Sheet optimizes for limited asset types
    - Single row per member regardless of portfolio size
-   - Reduces Google Sheets' 5 million cell limit impact
    - Enables atomic updates to minimize concurrent conflicts
 
-## Long-Term Solution (30,000+ Members)
+## Long-Term Solution
 
 ### System Architecture
 
@@ -109,29 +106,25 @@ The long-term solution transitions to a more scalable architecture using BigQuer
 2. **Data Flow**: Google Sheets → Apps Script → BigQuery → Cloud Functions → Email Service
 3. **Email Options**: 
    - HubSpot API (primary): Consistent with short-term solution
-   - Amazon Pinpoint (alternative): Cost-effective at scale ($42/month vs $3,600/month)
+   - Amazon Pinpoint (alternative): Cost-effective at scale 
 
 #### 1. Data Structure
 
-**BigQuery Database with Four Key Tables**:
+**BigQuery Database with Three Key Tables**:
 
 - **Members Table**: Core member data (ID, email, name, status)
 - **Portfolios Table**: One-to-many relationship with members, each row = one asset
 - **Research Table**: Weekly updates organized by asset and date
-- **Newsletter Log**: Comprehensive delivery tracking and analytics
 
 #### 2. Synchronization Process
 
 **Sheet to BigQuery Sync**:
 - Apps Script extracts member data from Google Sheets
 - Multi-tiered sync strategy (daily full sync, hourly incremental updates)
-- Batch processing with checkpointing for reliability
-- Differential updates to minimize data transfer
 
 **Advantages over Short-Term Solution**:
 - Higher concurrency: Handles thousands of concurrent operations
 - Better atomicity: Prevents partial updates
-- Improved resilience: Sophisticated retry mechanisms
 - Scalable architecture: No central bottleneck
 
 #### 3. Newsletter Generation
@@ -144,14 +137,7 @@ The long-term solution transitions to a more scalable architecture using BigQuer
 **Email Delivery**:
 - HubSpot integration maintains consistency with short-term solution
 - Amazon Pinpoint provides a more cost-effective alternative as volume grows
-- Comprehensive delivery analytics stored in BigQuery
 
-#### 4. Migration Strategy
-
-1. Set up BigQuery infrastructure while maintaining Google Sheets frontend
-2. Create parallel processing pipeline to validate data integrity
-3. Test with subset of members before full transition
-4. Gradually transition all members with minimal disruption
 
 ## Conclusion
 
