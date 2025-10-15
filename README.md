@@ -55,12 +55,17 @@ The short-term solution leverages Google Sheets, Google Apps Script, and HubSpot
 
 **Master Portfolio Sheet** (created by sync script)
 ```
-| MemberID           | Asset | Type      | SourceSheetURL          | LastSynced          |
-|-------------------|-------|-----------|------------------------|---------------------|
-| john@example.com  | BTC   | Portfolio | https://docs.google... | 2025-10-15T14:30:00 |
-| john@example.com  | ETH   | Portfolio | https://docs.google... | 2025-10-15T14:30:00 |
-| sarah@example.com | SOL   | Portfolio | https://docs.google... | 2025-10-15T14:30:00 |
+| MemberID           | BTC | ETH | SOL | USDC | DOGE | ... | LastSynced          | SourceSheetURL          |
+|-------------------|-----|-----|-----|------|------|-----|---------------------|------------------------|
+| john@example.com  | 1   | 1   | 0   | 0    | 1    | ... | 2025-10-15T14:30:00 | https://docs.google... |
+| sarah@example.com | 0   | 0   | 1   | 1    | 0    | ... | 2025-10-15T14:30:00 | https://docs.google... |
 ```
+
+This column-based structure is efficient because:
+1. There are a finite number of cryptocurrencies (~30+)
+2. Each member needs only one row instead of multiple rows
+3. Reduces data redundancy and improves lookup efficiency
+4. Minimizes concurrency conflicts during simultaneous updates
 
 #### 2. Synchronization Process
 
@@ -118,30 +123,39 @@ function generateWeeklyNewsletters() {
     researchMap[asset] = update;
   }
   
-  // Load master portfolio data
+  // Load master portfolio data using the column-based structure
   const masterSheet = SpreadsheetApp.openById(MASTER_SHEET_ID).getSheetByName("Portfolios");
-  const portfolioData = masterSheet.getDataRange().getValues();
-  
-  // Group by member email
-  const memberPortfolios = {};
-  for (let i = 1; i < portfolioData.length; i++) {
-    const email = portfolioData[i][0];
-    const asset = portfolioData[i][1];
-    
-    if (!memberPortfolios[email]) {
-      memberPortfolios[email] = [];
-    }
-    memberPortfolios[email].push(asset);
-  }
+  const masterData = masterSheet.getDataRange().getValues();
+  const masterHeaders = masterData[0]; // First row contains asset names as column headers
   
   // Generate and send personalized newsletters
-  const members = Object.keys(memberPortfolios);
-  
-  // Process in batches to avoid timeouts
   const BATCH_SIZE = 50;
-  for (let i = 0; i < members.length; i += BATCH_SIZE) {
-    const batch = members.slice(i, i + BATCH_SIZE);
-    processBatch(batch, memberPortfolios, researchMap);
+  
+  // Process members in batches (each row is now a complete member portfolio)
+  for (let i = 1; i < masterData.length; i += BATCH_SIZE) {
+    const batchEnd = Math.min(i + BATCH_SIZE, masterData.length);
+    const memberBatch = [];
+    
+    for (let j = i; j < batchEnd; j++) {
+      const memberRow = masterData[j];
+      const memberEmail = memberRow[0]; // First column is member email
+      
+      // Extract assets this member has (value of 1 in the asset's column)
+      const memberAssets = [];
+      for (let k = 1; k < masterHeaders.length; k++) {
+        // Skip metadata columns (LastSynced, SourceSheetURL)
+        if (masterHeaders[k] !== "LastSynced" && masterHeaders[k] !== "SourceSheetURL") {
+          // If value is 1, member has this asset
+          if (memberRow[k] === 1) {
+            memberAssets.push(masterHeaders[k]); // Add asset name to member's portfolio
+          }
+        }
+      }
+      
+      memberBatch.push({email: memberEmail, assets: memberAssets});
+    }
+    
+    processBatch(memberBatch, researchMap);
   }
 }
 ```
@@ -206,10 +220,13 @@ function sendNewsletterViaHubspot(email, content) {
 #### 5. Error Handling and Retry Mechanism
 
 ```javascript
-function processBatch(batch, memberPortfolios, researchMap) {
+function processBatch(memberBatch, researchMap) {
   const results = [];
-  for (const email of batch) {
-    const assets = memberPortfolios[email];
+  
+  // With column-based structure, memberBatch is an array of objects with email and assets properties
+  for (const member of memberBatch) {
+    const email = member.email;
+    const assets = member.assets;
     const content = generateNewsletterForMember(email, assets, researchMap);
     
     try {
@@ -261,6 +278,13 @@ function processBatch(batch, memberPortfolios, researchMap) {
 3. **Email Delivery**:
    - HubSpot Single Send API rate limits
    - Monitoring email deliverability
+
+4. **Data Structure Considerations**:
+   - The column-based Master Sheet structure significantly improves efficiency
+   - Limited by the total number of cryptocurrencies (finite set of ~30-100 assets)
+   - Each member requires only a single row regardless of portfolio size
+   - Minimizes Google Sheets' 5 million cell limit impact
+   - Column-based structure allows atomic updates to a single member row, reducing concurrent update conflicts
 
 ### Concurrency Handling
 
@@ -320,8 +344,34 @@ A critical challenge in the short-term solution is handling concurrent updates t
        // Wait up to 30 seconds for other processes to complete
        lock.waitLock(30000);
        
-       // Perform the update operation
-       // ...update master sheet logic...
+       // Column-based approach for optimized data structure
+       // Get the row for this member or create a new one
+       let memberRow = findMemberRow(masterSheet, memberEmail);
+       if (!memberRow) {
+         // Add a new row for this member
+         memberRow = masterSheet.getLastRow() + 1;
+         masterSheet.getRange(memberRow, 1).setValue(memberEmail);
+       }
+       
+       // Update the asset columns (1=has asset, 0=doesn't have)
+       const headerRow = masterSheet.getRange(1, 1, 1, masterSheet.getLastColumn()).getValues()[0];
+       for (const asset of assets) {
+         const assetCol = headerRow.indexOf(asset);
+         if (assetCol > 0) {  // Found the asset column
+           masterSheet.getRange(memberRow, assetCol + 1).setValue(1);
+         } else {
+           // New asset not in the sheet yet - add a new column
+           const newCol = masterSheet.getLastColumn() + 1;
+           masterSheet.getRange(1, newCol).setValue(asset);
+           masterSheet.getRange(memberRow, newCol).setValue(1);
+         }
+       }
+       
+       // Update metadata columns
+       const lastSyncedCol = headerRow.indexOf("LastSynced") + 1;
+       const sourceUrlCol = headerRow.indexOf("SourceSheetURL") + 1;
+       masterSheet.getRange(memberRow, lastSyncedCol).setValue(new Date().toISOString());
+       masterSheet.getRange(memberRow, sourceUrlCol).setValue(`https://docs.google.com/spreadsheets/d/${sheetId}`);
        
      } catch (e) {
        Logger.log(`Could not obtain lock: ${e.message}`);
@@ -756,10 +806,18 @@ This document outlines two complementary approaches to the personalized newslett
    - Quick to implement before the October 30 deadline
    - Leverages existing Google Sheets infrastructure
    - Suitable for the current scale of operations
+   - Efficient column-based Master Sheet structure
 
 2. **Long-Term Solution**: Google Sheets + BigQuery + AWS for 30,000+ members
    - Scalable architecture that preserves Google Sheets as input interface
    - Significantly more cost-effective at scale
    - Robust and maintainable for long-term growth
 
-By implementing the short-term solution now and planning for the gradual transition to the long-term architecture, the newsletter system can grow smoothly with the business without disrupting operations or requiring a complete overhaul.
+The column-based Master Sheet structure provides several advantages:
+- Reduced data redundancy with one row per member
+- More efficient concurrent updates with fewer conflicts
+- Faster lookups and processing for newsletter generation
+- Better scalability within the Google Sheets environment
+- Simpler transition path to the long-term BigQuery solution
+
+By implementing the short-term solution now with the optimized data structure and planning for the gradual transition to the long-term architecture, the newsletter system can grow smoothly with the business without disrupting operations or requiring a complete overhaul.
