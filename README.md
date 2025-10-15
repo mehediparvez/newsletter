@@ -132,427 +132,212 @@ The synchronization logic resides in a single Apps Script project that is bound 
 
 **D. Member Sheet Registration - Optimized Folder Monitor Approach**:
 
-The system uses a highly optimized folder monitoring approach for member sheet registration with intelligent prioritization and caching:
+The system uses a highly optimized folder monitoring approach for member sheet registration aligned with the client's workflow diagram. This process corresponds to the starting point in the workflow where Customer Portfolio Sheets are first accessed.
 
-```javascript
-// Advanced folder monitoring system with multi-tiered optimizations for maximum scalability
-function scanMemberSheetFolder() {
-  // Get the registry and cached data from script properties
-  const masterSheet = SpreadsheetApp.getActiveSpreadsheet();
-  const registrySheet = masterSheet.getSheetByName("Member Registry");
-  const properties = PropertiesService.getScriptProperties();
-  
-  // Smart scanning with layered timestamps
-  const lastFullScanTimestamp = properties.getProperty("LAST_FULL_SCAN_TIMESTAMP") || "1970-01-01T00:00:00.000Z";
-  const lastQuickScanTimestamp = properties.getProperty("LAST_QUICK_SCAN_TIMESTAMP") || lastFullScanTimestamp;
-  
-  // Get current registry state for quick lookups
-  const registeredIds = getRegisteredSheetIds(registrySheet);
-  const registryData = registrySheet.getDataRange().getValues();
-  
-  // Calculate whether we need a full scan or incremental scan
-  const now = new Date();
-  const fullScanThreshold = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
-  const needsFullScan = now.getTime() - new Date(lastFullScanTimestamp).getTime() > fullScanThreshold;
-  
-  // Get the member folder
-  const folder = DriveApp.getFolderById(MEMBER_FOLDER_ID);
-  let files;
-  
-  if (needsFullScan) {
-    // Full scan sorts by creation date in descending order
-    // This means newest sheets are processed first
-    Logger.log("Performing full folder scan with creation date sorting");
-    files = folder.searchFiles(
-      `mimeType='${MimeType.GOOGLE_SHEETS}' and trashed=false`,
-      { sortField: "createdDate", sortDirection: "desc" }
-    );
-    properties.setProperty("LAST_FULL_SCAN_TIMESTAMP", now.toISOString());
-  } else {
-    // Quick scan only looks at recently modified files since the last quick scan
-    Logger.log("Performing incremental scan of recently modified files");
-    files = folder.searchFiles(
-      `mimeType='${MimeType.GOOGLE_SHEETS}' and modifiedTime > '${lastQuickScanTimestamp}' and trashed=false`,
-      { sortField: "modifiedDate", sortDirection: "desc" }
-    );
-  }
-  
-  properties.setProperty("LAST_QUICK_SCAN_TIMESTAMP", now.toISOString());
-  
-  // Set processing limits to avoid timeout
-  const BATCH_SIZE = needsFullScan ? 25 : 50; // More careful with full scans
-  let processedCount = 0;
-  let newSheets = 0;
-  let updatedSheets = 0;
-  
-  // Load prioritization cache if it exists
-  let priorityQueue = [];
-  const cachedPriorityQueue = properties.getProperty("PRIORITY_QUEUE");
-  if (cachedPriorityQueue) {
-    try {
-      priorityQueue = JSON.parse(cachedPriorityQueue);
-    } catch (e) {
-      Logger.log("Error parsing priority queue: " + e.message);
-      priorityQueue = [];
-    }
-  }
-  
-  // Process highest priority sheets first if any exist in the queue
-  while (priorityQueue.length > 0 && processedCount < BATCH_SIZE) {
-    const sheetInfo = priorityQueue.shift();
-    try {
-      processSheet(sheetInfo.id, sheetInfo.priority);
-      processedCount++;
-      newSheets++;
-    } catch (e) {
-      Logger.log(`Error processing priority sheet ${sheetInfo.id}: ${e.message}`);
-      // Re-add to queue with lower priority if it was a temporary error
-      if (e.message.includes("Rate limit") || e.message.includes("Timeout")) {
-        sheetInfo.priority -= 1;
-        if (sheetInfo.priority > 0) {
-          priorityQueue.push(sheetInfo);
-        }
-      }
-    }
-  }
-  
-  // Then process regular files
-  while (files.hasNext() && processedCount < BATCH_SIZE) {
-    const file = files.next();
-    const sheetId = file.getId();
-    
-    // Skip if already registered and this is a full scan
-    if (needsFullScan && registeredIds.includes(sheetId)) continue;
-    
-    // If this is an incremental scan, check if we need to update existing sheet
-    if (!needsFullScan && registeredIds.includes(sheetId)) {
-      // Update existing sheet metadata
-      const rowIndex = findRegistryRowIndex(registryData, sheetId);
-      if (rowIndex !== -1) {
-        const modifiedDate = file.getLastUpdated().toISOString();
-        // Only update if the file has been modified since last registered
-        if (modifiedDate > registryData[rowIndex][6]) { // ModifiedDate column
-          registrySheet.getRange(rowIndex + 1, 7).setValue(modifiedDate); // Update ModifiedDate
-          
-          // Re-sync the data since it's been modified
-          try {
-            const sheet = SpreadsheetApp.openById(sheetId);
-            const memberEmail = extractMemberEmail(sheet);
-            const assets = extractAssets(sheet.getSheets()[0]);
-            const portfolioSheet = masterSheet.getSheetByName("Portfolios");
-            
-            updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
-            registrySheet.getRange(rowIndex + 1, 4).setValue(new Date().toISOString()); // Update LastSynced
-            registrySheet.getRange(rowIndex + 1, 5).setValue("SUCCESS");
-            
-            updatedSheets++;
-          } catch (e) {
-            Logger.log(`Error updating sheet ${sheetId}: ${e.message}`);
-            registrySheet.getRange(rowIndex + 1, 5).setValue("ERROR: " + e.message);
-          }
-        }
-        processedCount++;
-        continue;
-      }
-    }
-    
-    // Process new sheet
-    try {
-      processSheet(sheetId);
-      processedCount++;
-      newSheets++;
-    } catch (e) {
-      Logger.log(`Error processing sheet ${sheetId}: ${e.message}`);
-      
-      // Add to priority queue for next run if it's a temporary error
-      if (e.message.includes("Rate limit") || e.message.includes("Timeout")) {
-        priorityQueue.push({
-          id: sheetId,
-          priority: 3 // High priority for retry
-        });
-      } else {
-        // Register with error for manual review
-        registrySheet.appendRow([
-          sheetId,
-          "unknown",
-          file.getName(),
-          new Date().toISOString(),
-          "ERROR: " + e.message,
-          file.getDateCreated().toISOString(),
-          file.getLastUpdated().toISOString(),
-          0 // Low priority
-        ]);
-      }
-    }
-  }
-  
-  // Save updated priority queue
-  if (priorityQueue.length > 0) {
-    properties.setProperty("PRIORITY_QUEUE", JSON.stringify(priorityQueue));
-  } else {
-    properties.deleteProperty("PRIORITY_QUEUE");
-  }
-  
-  // If we still have more files to process, schedule another run
-  if ((processedCount >= BATCH_SIZE && files.hasNext()) || priorityQueue.length > 0) {
-    // Schedule with exponential backoff if we're hitting rate limits
-    const backoffMinutes = processedCount === 0 ? 5 : 1;
-    ScriptApp.newTrigger('scanMemberSheetFolder')
-      .timeBased()
-      .after(1000 * 60 * backoffMinutes)
-      .create();
-    
-    Logger.log(`Scheduled next batch in ${backoffMinutes} minutes`);
-  }
-  
-  // Helper function to process a single sheet
-  function processSheet(sheetId, priority = 1) {
-    const file = DriveApp.getFileById(sheetId);
-    const sheet = SpreadsheetApp.openById(sheetId);
-    const memberEmail = extractMemberEmail(sheet);
-    
-    if (memberEmail) {
-      // Register new sheet
-      registrySheet.appendRow([
-        sheetId,
-        memberEmail,
-        sheet.getName(),
-        new Date().toISOString(),
-        "AUTO-REGISTERED",
-        file.getDateCreated().toISOString(),
-        file.getLastUpdated().toISOString(),
-        priority
-      ]);
-      
-      // Perform initial sync
-      const assets = extractAssets(sheet.getSheets()[0]);
-      const portfolioSheet = masterSheet.getSheetByName("Portfolios");
-      updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
-    }
-  }
-  
-  // Helper function to find row index in registry data
-  function findRegistryRowIndex(data, sheetId) {
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][0] === sheetId) {
-        return i;
-      }
-    }
-    return -1;
-  }
-  
-  return {
-    processed: processedCount,
-    newSheets: newSheets,
-    updatedSheets: updatedSheets,
-    lastFullScan: properties.getProperty("LAST_FULL_SCAN_TIMESTAMP"),
-    lastQuickScan: properties.getProperty("LAST_QUICK_SCAN_TIMESTAMP"),
-    pendingPriorityItems: priorityQueue.length
-  };
-}
+**Implementation Approach:**
+1. **Tiered Scanning System**: 
+   - Daily full scans of the member folder to catch any missed sheets
+   - Frequent incremental scans that only check recently modified files
+   - Smart timestamp tracking to minimize redundant processing
+
+2. **Priority-Based Processing**:
+   - Process newest sheets first for better user experience
+   - Maintain a persistent priority queue for failed or important sheets
+   - Implement throttling to avoid Google API rate limits
+
+3. **Batch Processing Logic**: 
+   - Process files in small batches (25-50 at a time)
+   - Schedule automatic continuation for large folders
+   - Use exponential backoff when approaching quota limits
+
+**Optimizations:**
+- Store last scan timestamps to enable efficient incremental processing
+- Track sheet metadata (creation/modification dates) to identify only changed files
+- Implement caching to avoid redundant Google Drive API calls
+- Apply server-side filtering and sorting via Drive API query parameters
+- Use registry-based approach to avoid re-processing already registered sheets
+
+**Limitations and Constraints:**
+- Google Apps Script's 6-minute execution timeout requires careful batching
+- Drive API has rate limits that necessitate controlled processing speeds
+- Each file access requires a separate API call, which can be expensive at scale
+- Large member folders (approaching 1,000) will need multiple scan batches
+- Manual intervention may be required for persistent processing errors
 ```
 
 **E. Trigger-Based Sync**:
 
-```javascript
-// This code resides in the Apps Script project attached to the Master Portfolio Sheet
-// Triggered when a registered member sheet is edited
-function onMemberSheetEdit(e) {
-  const sheet = e.source.getActiveSheet();
-  const sheetId = sheet.getId();
-  
-  // Check if this is a registered member sheet
-  const masterSheet = SpreadsheetApp.getActiveSpreadsheet();
-  const registrySheet = masterSheet.getSheetByName("Member Registry");
-  const registryData = registrySheet.getDataRange().getValues();
-  
-  let memberEmail = null;
-  for (let i = 1; i < registryData.length; i++) {
-    if (registryData[i][0] === sheetId) {
-      memberEmail = registryData[i][1];
-      break;
-    }
-  }
-  
-  if (!memberEmail) {
-    Logger.log(`Unregistered sheet edited: ${sheetId}`);
-    return;
-  }
-  
-  // Get all assets from this sheet
-  const assets = extractAssets(sheet);
-  
-  // Update the master sheet (accessible within the same project)
-  const portfolioSheet = masterSheet.getSheetByName("Portfolios");
-  updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
-  
-  // Update sync timestamp in registry
-  for (let i = 1; i < registryData.length; i++) {
-    if (registryData[i][0] === sheetId) {
-      registrySheet.getRange(i+1, 4).setValue(new Date().toISOString());
-      registrySheet.getRange(i+1, 5).setValue("SUCCESS");
-      break;
-    }
-  }
-  
-  // Log the sync
-  Logger.log(`Updated portfolio for ${memberEmail} with ${assets.length} assets`);
-}
+This component handles the "Sync portfolio data from Customer Sheets" step in the client's flowchart, triggering whenever a member updates their portfolio.
+
+**Implementation Approach:**
+1. **Event-Based Architecture**: 
+   - Install change triggers on all registered member sheets
+   - Automatically detect when a portfolio is modified
+   - Execute synchronization only when necessary
+
+2. **Data Extraction Process**:
+   - Parse the member's Google Sheet to identify their assets
+   - Extract relevant portfolio data using column mappings
+   - Transform data into the standardized format for the Master Sheet
+
+3. **Master Sheet Update Process**:
+   - Locate or create the member's row in the Master Portfolio Sheet
+   - Update asset columns with binary indicators (1=has asset, 0=doesn't have)
+   - Maintain metadata including last sync time and source URL
+
+**Optimizations:**
+- Use registry lookups to quickly validate registered sheets
+- Implement change detection to avoid unnecessary processing
+- Apply locking mechanisms to prevent concurrent update conflicts
+- Use batch writes when updating the master sheet
+- Maintain audit logs for troubleshooting and recovery
+
+**Limitations and Constraints:**
+- Google Apps Script triggers have quotas that limit activation frequency
+- Simultaneous edits across many sheets can cause trigger queue backlogs
+- Each trigger execution has independent authentication context
+- Script may need to handle permission issues if sheet owners differ
+- Registry must be kept consistent to ensure proper sheet tracking
 ```
 
 #### 3. Newsletter Generation Process
 
+This process covers the central portion of the client's flowchart, where Customer Portfolio data is matched with Research Updates to generate personalized newsletters.
+
 **A. Weekly Newsletter Workflow**:
 
-1. Get the current week's date column from research sheet
-2. Load the Master Portfolio Sheet data into memory
-3. Create a fast lookup data structure for research updates
+**Implementation Approach:**
+1. **Data Collection**:
+   - Retrieve current week's research data from the Research Updates Sheet
+   - Load Master Portfolio Sheet containing all member asset information
+   - Create optimized lookup structures for fast data matching
 
-```javascript
-// This function runs in the Apps Script project attached to the Master Portfolio Sheet
-// Typically triggered weekly by a time-based trigger
-// Uses the Member Registry to track delivery status
-function generateWeeklyNewsletters() {
-  // Get research data for current week
-  const researchSheet = SpreadsheetApp.openById(RESEARCH_SHEET_ID).getActiveSheet();
-  const researchData = researchSheet.getDataRange().getValues();
-  const headers = researchData[0];
-  
-  // Find the current week's column
-  const currentWeek = "Oct 27"; // Replace with dynamic date calculation
-  const weekColumnIndex = headers.indexOf(currentWeek);
-  
-  // Build research lookup map
-  const researchMap = {};
-  for (let i = 1; i < researchData.length; i++) {
-    const asset = researchData[i][0];
-    const update = researchData[i][weekColumnIndex] || researchData[i][1]; // Use default if no update
-    researchMap[asset] = update;
-  }
-  
-  // Load master portfolio data using the column-based structure
-  const masterSheet = SpreadsheetApp.openById(MASTER_SHEET_ID).getSheetByName("Portfolios");
-  const masterData = masterSheet.getDataRange().getValues();
-  const masterHeaders = masterData[0]; // First row contains asset names as column headers
-  
-  // Generate and send personalized newsletters
-  const BATCH_SIZE = 50;
-  
-  // Process members in batches (each row is now a complete member portfolio)
-  for (let i = 1; i < masterData.length; i += BATCH_SIZE) {
-    const batchEnd = Math.min(i + BATCH_SIZE, masterData.length);
-    const memberBatch = [];
-    
-    for (let j = i; j < batchEnd; j++) {
-      const memberRow = masterData[j];
-      const memberEmail = memberRow[0]; // First column is member email
-      
-      // Extract assets this member has (value of 1 in the asset's column)
-      const memberAssets = [];
-      for (let k = 1; k < masterHeaders.length; k++) {
-        // Skip metadata columns (LastSynced, SourceSheetURL)
-        if (masterHeaders[k] !== "LastSynced" && masterHeaders[k] !== "SourceSheetURL") {
-          // If value is 1, member has this asset
-          if (memberRow[k] === 1) {
-            memberAssets.push(masterHeaders[k]); // Add asset name to member's portfolio
-          }
-        }
-      }
-      
-      memberBatch.push({email: memberEmail, assets: memberAssets});
-    }
-    
-    processBatch(memberBatch, researchMap);
-  }
-}
-```
+2. **Matching Process**:
+   - For each member in the Master Sheet, extract their portfolio assets
+   - Match each asset against current research updates
+   - Filter to include only updates relevant to the member's portfolio
+   - Handle special cases like default messages for assets with no updates
+
+3. **Batch Processing**:
+   - Process members in batches of 50 to avoid timeout issues
+   - Track progress to enable resuming if execution is interrupted
+   - Implement a queue system for very large member bases
+
+**Optimizations:**
+- Use in-memory data structures like Maps for O(1) lookups
+- Leverage column-based structure for efficient portfolio data extraction
+- Implement caching for research data to reduce redundant processing
+- Apply parallel processing where possible within Apps Script constraints
+- Pre-filter data to reduce memory footprint during processing
+
+**Limitations and Constraints:**
+- Large member bases approaching 1,000 will require multiple batch executions
+- Content size limitations may apply to very large portfolios
+- Template rendering performance can degrade with many asset updates
+- Memory limitations in Apps Script environment (50MB limit)
+- Weekly processing window needs to accommodate full member base
 
 **B. Newsletter Content Generation**:
 
-```javascript
-function generateNewsletterForMember(email, assets, researchMap) {
-  let content = getNewsletterTemplate(); // Get the base template
-  
-  // Add personalized asset updates
-  let assetUpdates = "";
-  for (const asset of assets) {
-    if (researchMap[asset]) {
-      assetUpdates += `<h3>${asset}</h3><p>${researchMap[asset]}</p>`;
-    }
-  }
-  
-  content = content.replace("{{MEMBER_EMAIL}}", email)
-                   .replace("{{ASSET_UPDATES}}", assetUpdates)
-                   .replace("{{DATE}}", new Date().toLocaleDateString());
-  
-  return content;
-}
+**Implementation Approach:**
+1. **Template Management**:
+   - Maintain base HTML templates with placeholders for dynamic content
+   - Support personalization tokens for member-specific information
+   - Implement responsive email design for various device compatibility
+
+2. **Content Assembly**:
+   - Generate personalized asset sections based on portfolio matches
+   - Apply consistent formatting and styling to research updates
+   - Insert appropriate fallback content for empty sections
+   - Include personalized greeting and footer information
+
+3. **Quality Control**:
+   - Validate generated content for HTML compliance
+   - Ensure all links and images are properly formatted
+   - Apply length limitations to prevent oversized emails
+   - Generate preview versions for testing
 ```
 
 #### 4. HubSpot Integration
 
-```javascript
-function sendNewsletterViaHubspot(email, content) {
-  const payload = {
-    emailId: HUBSPOT_TEMPLATE_ID, // Your HubSpot email template ID
-    message: {
-      to: email
-    },
-    contactProperties: [
-      { name: "email", value: email }
-    ],
-    customProperties: {
-      newsletter_content: content
-    }
-  };
-  
-  try {
-    const response = UrlFetchApp.fetch('https://api.hubapi.com/marketing/v4/email/single-send', {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${HUBSPOT_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      payload: JSON.stringify(payload)
-    });
-    
-    return JSON.parse(response.getContentText());
-  } catch (e) {
-    Logger.log(`Error sending to ${email}: ${e.message}`);
-    return { error: e.message, email: email };
-  }
-}
+This component handles the "Send Email Address + Email Content to HubSpot Sender" portion of the client's flowchart, delivering personalized newsletters to members.
+
+**Implementation Approach:**
+1. **API Integration**:
+   - Leverage HubSpot's Single Send API for targeted email delivery
+   - Set up OAuth or API key authentication for secure access
+   - Configure proper email templates in HubSpot for consistent branding
+   - Map dynamic content fields to HubSpot custom properties
+
+2. **Delivery Process**:
+   - Prepare email payload with recipient information and personalized content
+   - Submit requests to HubSpot's API with appropriate authentication
+   - Process responses to confirm successful delivery
+   - Track email status for reporting and retry purposes
+
+3. **Contact Management**:
+   - Ensure all members exist as contacts in HubSpot
+   - Update contact properties with relevant member information
+   - Apply proper list segmentation for tracking and analytics
+   - Handle unsubscribe preferences and compliance requirements
+
+**Optimizations:**
+- Batch API requests to minimize network overhead
+- Implement connection pooling for API efficiency
+- Apply rate limiting to respect HubSpot's API quotas
+- Cache authentication tokens to reduce unnecessary token requests
+- Use compression for large content payloads
+
+**Limitations and Constraints:**
+- HubSpot API has rate limits that must be respected (10 requests/second)
+- Single Send API has volume limitations for enterprise tiers
+- Large HTML content may need special handling to avoid truncation
+- API response times may vary under high load conditions
+- OAuth token expiration requires refresh handling
 ```
 
 #### 5. Error Handling and Retry Mechanism
 
-```javascript
-function processBatch(memberBatch, researchMap) {
-  const results = [];
-  
-  // With column-based structure, memberBatch is an array of objects with email and assets properties
-  for (const member of memberBatch) {
-    const email = member.email;
-    const assets = member.assets;
-    const content = generateNewsletterForMember(email, assets, researchMap);
-    
-    try {
-      const result = sendNewsletterViaHubspot(email, content);
-      results.push({ email: email, status: "success", result: result });
-    } catch (e) {
-      results.push({ email: email, status: "error", error: e.message });
-    }
-  }
-  
-  // Save results to log sheet for tracking and retry
-  logResults(results);
-  
-  // Schedule retry for failed sends
-  const failed = results.filter(r => r.status === "error");
-  if (failed.length > 0) {
-    scheduleRetry(failed);
-  }
-}
+This component handles failure recovery and ensures reliable delivery across the entire workflow, especially crucial for the "Pass" or "Fail" decision points in the client's flowchart.
+
+**Implementation Approach:**
+1. **Comprehensive Logging**:
+   - Implement structured logging for all operations
+   - Record detailed information about successes and failures
+   - Maintain dedicated log sheets for each system component
+   - Enable administrators to review system performance
+
+2. **Failure Detection**:
+   - Implement try-catch blocks around all critical operations
+   - Classify errors into recoverable vs. non-recoverable categories
+   - Detect common failure patterns (API limits, timeouts, permissions)
+   - Monitor system health through status dashboards
+
+3. **Retry Strategy**:
+   - Implement exponential backoff for temporary failures
+   - Set maximum retry attempts to prevent infinite retry loops
+   - Schedule delayed retries for rate-limited operations
+   - Prioritize critical operations in retry queues
+
+4. **Recovery Procedures**:
+   - Maintain transaction logs for incomplete operations
+   - Implement idempotent operations where possible
+   - Provide manual override capabilities for administrators
+   - Create self-healing mechanisms for common failure scenarios
+
+**Optimizations:**
+- Use batch processing to minimize failure impact
+- Implement checkpoint systems to resume interrupted operations
+- Leverage distributed state tracking via the registry
+- Apply circuit breakers to prevent cascade failures
+- Cache successful results to avoid redundant processing
+
+**Limitations and Constraints:**
+- Complex retry logic increases system complexity
+- Recovery operations consume additional quota allowances
+- Some failures may require manual intervention (e.g., permission issues)
+- Persistent failures may need escalation procedures
+- Time-sensitive operations may have limited retry windows
 ```
 
 ### Implementation Timeline
@@ -597,7 +382,7 @@ function processBatch(memberBatch, researchMap) {
 
 ### Concurrency Handling
 
-A critical challenge in the short-term solution is handling concurrent updates to the Master Portfolio Sheet. Consider a scenario where 100 Google Sheets are modified simultaneously:
+A critical challenge in the short-term solution is handling concurrent updates to the Master Portfolio Sheet, especially relevant to the interconnected flows in the client's diagram where multiple processes must coordinate.
 
 #### Potential Issues:
 - **Race Conditions**: Multiple Apps Script triggers attempting to update the Master Sheet simultaneously
@@ -607,95 +392,65 @@ A critical challenge in the short-term solution is handling concurrent updates t
 
 #### Recommended Approach:
 
-1. **Implement a Queue System** (in the Master Sheet Apps Script project):
-   ```javascript
-   function queueSheetSync(sheetId, memberEmail) {
-     // Instead of directly updating the master sheet
-     const queueSheet = SpreadsheetApp.openById(QUEUE_SHEET_ID).getSheetByName("SyncQueue");
-     queueSheet.appendRow([
-       new Date().toISOString(),
-       sheetId,
-       memberEmail,
-       "PENDING"
-     ]);
-   }
-   
-   // Separate time-triggered function that runs every 5 minutes
-   // This runs in the Master Sheet Apps Script project
-   function processSyncQueue() {
-     const queueSheet = SpreadsheetApp.openById(QUEUE_SHEET_ID).getSheetByName("SyncQueue");
-     const queue = queueSheet.getDataRange().getValues();
-     
-     // Process pending syncs (10 at a time to avoid timeouts)
-     let processed = 0;
-     for (let i = 1; i < queue.length && processed < 10; i++) {
-       if (queue[i][3] === "PENDING") {
-         const sheetId = queue[i][1];
-         const memberEmail = queue[i][2];
-         
-         try {
-           syncSheetToMaster(sheetId, memberEmail);
-           queueSheet.getRange(i+1, 4).setValue("COMPLETED");
-         } catch (e) {
-           queueSheet.getRange(i+1, 4).setValue("ERROR: " + e.message);
-         }
-         
-         processed++;
-       }
-     }
-   }
-   ```
+1. **Implement a Queue System**:
+
+   **Implementation Approach:**
+   - Create a dedicated SyncQueue sheet to track pending updates
+   - Record sheet ID, member email, timestamp, and status for each update request
+   - Implement a time-triggered processor that handles queue entries in batches
+   - Provide priority levels for critical sync operations
+
+   **Optimizations:**
+   - Process queue in small batches (10-15 entries) to prevent timeouts
+   - Implement status tracking for monitoring and troubleshooting
+   - Apply intelligent sorting to prioritize important updates
+   - Purge completed entries to maintain queue performance
+
+   **Limitations:**
+   - Queue processing adds latency to real-time updates
+   - Queue sheet itself becomes a potential bottleneck at scale
+   - Time-based triggers have minimum intervals (1 minute)
+   - Manual intervention needed if queue processing fails
 
 2. **Locking Mechanism**:
-   ```javascript
-   function updateMasterPortfolio(masterSheet, memberEmail, assets, sheetId) {
-     const lock = LockService.getScriptLock();
-     try {
-       // Wait up to 30 seconds for other processes to complete
-       lock.waitLock(30000);
-       
-       // Column-based approach for optimized data structure
-       // Get the row for this member or create a new one
-       let memberRow = findMemberRow(masterSheet, memberEmail);
-       if (!memberRow) {
-         // Add a new row for this member
-         memberRow = masterSheet.getLastRow() + 1;
-         masterSheet.getRange(memberRow, 1).setValue(memberEmail);
-       }
-       
-       // Update the asset columns (1=has asset, 0=doesn't have)
-       const headerRow = masterSheet.getRange(1, 1, 1, masterSheet.getLastColumn()).getValues()[0];
-       for (const asset of assets) {
-         const assetCol = headerRow.indexOf(asset);
-         if (assetCol > 0) {  // Found the asset column
-           masterSheet.getRange(memberRow, assetCol + 1).setValue(1);
-         } else {
-           // New asset not in the sheet yet - add a new column
-           const newCol = masterSheet.getLastColumn() + 1;
-           masterSheet.getRange(1, newCol).setValue(asset);
-           masterSheet.getRange(memberRow, newCol).setValue(1);
-         }
-       }
-       
-       // Update metadata columns
-       const lastSyncedCol = headerRow.indexOf("LastSynced") + 1;
-       const sourceUrlCol = headerRow.indexOf("SourceSheetURL") + 1;
-       masterSheet.getRange(memberRow, lastSyncedCol).setValue(new Date().toISOString());
-       masterSheet.getRange(memberRow, sourceUrlCol).setValue(`https://docs.google.com/spreadsheets/d/${sheetId}`);
-       
-     } catch (e) {
-       Logger.log(`Could not obtain lock: ${e.message}`);
-       throw new Error("Too many concurrent updates. Please try again later.");
-     } finally {
-       lock.releaseLock();
-     }
-   }
-   ```
+
+   **Implementation Approach:**
+   - Leverage Google's LockService for critical section protection
+   - Implement proper timeout handling for lock acquisition
+   - Structure code to minimize lock duration
+   - Use row-specific locking where possible to reduce contention
+
+   **Optimizations:**
+   - Keep lock sections as short as possible
+   - Implement fallback mechanisms when locks cannot be obtained
+   - Use optimistic concurrency control for non-critical operations
+   - Apply batch updates to minimize lock/unlock cycles
+
+   **Limitations:**
+   - Lock timeouts (maximum 30 seconds) may be insufficient for complex operations
+   - Lock service has its own quotas and limitations
+   - Global locks can create system-wide bottlenecks
+   - Lock management adds complexity to error handling
 
 3. **Conflict Resolution Strategy**:
-   - Implement timestamp-based last-write-wins
-   - Consider maintaining a history of changes for auditing
-   - Log detailed information about conflicts for manual resolution if needed
+   
+   **Implementation Approach:**
+   - Apply timestamp-based "last write wins" approach for simple conflicts
+   - Implement version tracking for critical data elements
+   - Maintain change history for audit and recovery purposes
+   - Create merge strategies for compatible concurrent changes
+   
+   **Optimizations:**
+   - Use column-based structure to minimize conflict surface area
+   - Implement differential updates to reduce collision probability
+   - Apply semantic conflict resolution for specific data types
+   - Create notification system for detected conflicts
+   
+   **Limitations:**
+   - Some conflicts may require manual resolution
+   - History tracking increases storage requirements
+   - Complex merge logic can introduce bugs
+   - Last-write-wins may not be appropriate for all data types
 
 This approach distributes updates over time and ensures that even with many simultaneous sheet modifications, the Master Portfolio Sheet remains consistent and accurate.
 
