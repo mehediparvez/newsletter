@@ -103,18 +103,20 @@ This column-based structure is efficient because:
 
 **B. Member Sheet Registry**:
 
-The Member Registry tab in the Master Sheet keeps track of all individual member sheets:
+The Member Registry tab in the Master Sheet keeps track of all individual member sheets with enhanced metadata for scalability:
 
 ```
-| SheetID                                | MemberEmail       | SheetName       | LastSynced          | SyncStatus |
-|---------------------------------------|-------------------|----------------|---------------------|------------|
-| 1Abc...XYZ                            | john@example.com  | Portfolio      | 2025-10-15T14:30:00 | SUCCESS    |
-| 2Def...123                            | sarah@example.com | Portfolio      | 2025-10-15T14:35:00 | SUCCESS    |
+| SheetID        | MemberEmail       | SheetName  | LastSynced          | SyncStatus | CreatedDate         | ModifiedDate        | Priority |
+|---------------|-------------------|------------|---------------------|------------|---------------------|---------------------|----------|
+| 1Abc...XYZ    | john@example.com  | Portfolio  | 2025-10-15T14:30:00 | SUCCESS    | 2025-10-01T10:00:00 | 2025-10-15T14:30:00 | 1        |
+| 2Def...123    | sarah@example.com | Portfolio  | 2025-10-15T14:35:00 | SUCCESS    | 2025-10-05T11:30:00 | 2025-10-15T14:35:00 | 2        |
 ```
 
-This registry enables:
+This enhanced registry enables:
 - Dynamic discovery of all member sheets without hardcoding IDs
 - Tracking sync status for each member sheet
+- Timestamp-based incremental processing for scalability
+- Prioritization of syncs based on modification time or importance
 - Adding new member sheets without modifying code
 - Admin interface for managing member sheets and troubleshooting
 
@@ -128,91 +130,225 @@ The synchronization logic resides in a single Apps Script project that is bound 
 4. **Dynamic Sheet Access**: No hardcoding of sheet IDs - all member sheets are discovered and tracked in the registry
 5. **Cross-Sheet Access**: The script has read access to member sheets and read/write access to the Master Sheet
 
-**D. Member Sheet Registration**:
+**D. Member Sheet Registration - Optimized Folder Monitor Approach**:
 
-There are two approaches to handle member sheet registration:
+The system uses a highly optimized folder monitoring approach for member sheet registration with intelligent prioritization and caching:
 
-1. **Registration Form**:
 ```javascript
-// Simple web app for registering member sheets
-function doGet() {
-  const html = HtmlService.createHtmlOutputFromFile('RegistrationForm')
-    .setTitle('Register Member Portfolio');
-  return html;
-}
-
-function registerMemberSheet(memberEmail, sheetUrl) {
-  try {
-    const sheet = SpreadsheetApp.openByUrl(sheetUrl);
-    const sheetId = sheet.getId();
-    const sheetName = sheet.getSheets()[0].getName();
-    
-    // Add to registry
-    const masterSheet = SpreadsheetApp.getActiveSpreadsheet();
-    const registrySheet = masterSheet.getSheetByName("Member Registry");
-    registrySheet.appendRow([
-      sheetId,
-      memberEmail,
-      sheetName,
-      new Date().toISOString(),
-      "PENDING"
-    ]);
-    
-    // Perform initial sync
-    const assets = extractAssets(sheet.getSheets()[0]);
-    const portfolioSheet = masterSheet.getSheetByName("Portfolios");
-    updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
-    
-    // Update status
-    const lastRow = registrySheet.getLastRow();
-    registrySheet.getRange(lastRow, 5).setValue("SUCCESS");
-    
-    return { success: true, message: "Member sheet registered successfully" };
-  } catch (e) {
-    return { success: false, message: "Error: " + e.message };
-  }
-}
-```
-
-2. **Folder Monitor**:
-```javascript
-// Scheduled function to scan a specific folder for new member sheets
+// Advanced folder monitoring system with multi-tiered optimizations for maximum scalability
 function scanMemberSheetFolder() {
-  const folder = DriveApp.getFolderById(MEMBER_FOLDER_ID);
-  const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
-  const registrySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Member Registry");
-  const registeredIds = getRegisteredSheetIds(registrySheet);
+  // Get the registry and cached data from script properties
+  const masterSheet = SpreadsheetApp.getActiveSpreadsheet();
+  const registrySheet = masterSheet.getSheetByName("Member Registry");
+  const properties = PropertiesService.getScriptProperties();
   
-  while (files.hasNext()) {
+  // Smart scanning with layered timestamps
+  const lastFullScanTimestamp = properties.getProperty("LAST_FULL_SCAN_TIMESTAMP") || "1970-01-01T00:00:00.000Z";
+  const lastQuickScanTimestamp = properties.getProperty("LAST_QUICK_SCAN_TIMESTAMP") || lastFullScanTimestamp;
+  
+  // Get current registry state for quick lookups
+  const registeredIds = getRegisteredSheetIds(registrySheet);
+  const registryData = registrySheet.getDataRange().getValues();
+  
+  // Calculate whether we need a full scan or incremental scan
+  const now = new Date();
+  const fullScanThreshold = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+  const needsFullScan = now.getTime() - new Date(lastFullScanTimestamp).getTime() > fullScanThreshold;
+  
+  // Get the member folder
+  const folder = DriveApp.getFolderById(MEMBER_FOLDER_ID);
+  let files;
+  
+  if (needsFullScan) {
+    // Full scan sorts by creation date in descending order
+    // This means newest sheets are processed first
+    Logger.log("Performing full folder scan with creation date sorting");
+    files = folder.searchFiles(
+      `mimeType='${MimeType.GOOGLE_SHEETS}' and trashed=false`,
+      { sortField: "createdDate", sortDirection: "desc" }
+    );
+    properties.setProperty("LAST_FULL_SCAN_TIMESTAMP", now.toISOString());
+  } else {
+    // Quick scan only looks at recently modified files since the last quick scan
+    Logger.log("Performing incremental scan of recently modified files");
+    files = folder.searchFiles(
+      `mimeType='${MimeType.GOOGLE_SHEETS}' and modifiedTime > '${lastQuickScanTimestamp}' and trashed=false`,
+      { sortField: "modifiedDate", sortDirection: "desc" }
+    );
+  }
+  
+  properties.setProperty("LAST_QUICK_SCAN_TIMESTAMP", now.toISOString());
+  
+  // Set processing limits to avoid timeout
+  const BATCH_SIZE = needsFullScan ? 25 : 50; // More careful with full scans
+  let processedCount = 0;
+  let newSheets = 0;
+  let updatedSheets = 0;
+  
+  // Load prioritization cache if it exists
+  let priorityQueue = [];
+  const cachedPriorityQueue = properties.getProperty("PRIORITY_QUEUE");
+  if (cachedPriorityQueue) {
+    try {
+      priorityQueue = JSON.parse(cachedPriorityQueue);
+    } catch (e) {
+      Logger.log("Error parsing priority queue: " + e.message);
+      priorityQueue = [];
+    }
+  }
+  
+  // Process highest priority sheets first if any exist in the queue
+  while (priorityQueue.length > 0 && processedCount < BATCH_SIZE) {
+    const sheetInfo = priorityQueue.shift();
+    try {
+      processSheet(sheetInfo.id, sheetInfo.priority);
+      processedCount++;
+      newSheets++;
+    } catch (e) {
+      Logger.log(`Error processing priority sheet ${sheetInfo.id}: ${e.message}`);
+      // Re-add to queue with lower priority if it was a temporary error
+      if (e.message.includes("Rate limit") || e.message.includes("Timeout")) {
+        sheetInfo.priority -= 1;
+        if (sheetInfo.priority > 0) {
+          priorityQueue.push(sheetInfo);
+        }
+      }
+    }
+  }
+  
+  // Then process regular files
+  while (files.hasNext() && processedCount < BATCH_SIZE) {
     const file = files.next();
     const sheetId = file.getId();
     
-    // Skip already registered sheets
-    if (registeredIds.includes(sheetId)) continue;
+    // Skip if already registered and this is a full scan
+    if (needsFullScan && registeredIds.includes(sheetId)) continue;
     
-    try {
-      const sheet = SpreadsheetApp.openById(sheetId);
-      const memberEmail = extractMemberEmail(sheet);
-      
-      if (memberEmail) {
-        // Register new sheet
-        registrySheet.appendRow([
-          sheetId,
-          memberEmail,
-          sheet.getName(),
-          new Date().toISOString(),
-          "AUTO-REGISTERED"
-        ]);
-        
-        // Perform initial sync
-        const assets = extractAssets(sheet.getSheets()[0]);
-        const portfolioSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Portfolios");
-        updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
+    // If this is an incremental scan, check if we need to update existing sheet
+    if (!needsFullScan && registeredIds.includes(sheetId)) {
+      // Update existing sheet metadata
+      const rowIndex = findRegistryRowIndex(registryData, sheetId);
+      if (rowIndex !== -1) {
+        const modifiedDate = file.getLastUpdated().toISOString();
+        // Only update if the file has been modified since last registered
+        if (modifiedDate > registryData[rowIndex][6]) { // ModifiedDate column
+          registrySheet.getRange(rowIndex + 1, 7).setValue(modifiedDate); // Update ModifiedDate
+          
+          // Re-sync the data since it's been modified
+          try {
+            const sheet = SpreadsheetApp.openById(sheetId);
+            const memberEmail = extractMemberEmail(sheet);
+            const assets = extractAssets(sheet.getSheets()[0]);
+            const portfolioSheet = masterSheet.getSheetByName("Portfolios");
+            
+            updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
+            registrySheet.getRange(rowIndex + 1, 4).setValue(new Date().toISOString()); // Update LastSynced
+            registrySheet.getRange(rowIndex + 1, 5).setValue("SUCCESS");
+            
+            updatedSheets++;
+          } catch (e) {
+            Logger.log(`Error updating sheet ${sheetId}: ${e.message}`);
+            registrySheet.getRange(rowIndex + 1, 5).setValue("ERROR: " + e.message);
+          }
+        }
+        processedCount++;
+        continue;
       }
+    }
+    
+    // Process new sheet
+    try {
+      processSheet(sheetId);
+      processedCount++;
+      newSheets++;
     } catch (e) {
       Logger.log(`Error processing sheet ${sheetId}: ${e.message}`);
+      
+      // Add to priority queue for next run if it's a temporary error
+      if (e.message.includes("Rate limit") || e.message.includes("Timeout")) {
+        priorityQueue.push({
+          id: sheetId,
+          priority: 3 // High priority for retry
+        });
+      } else {
+        // Register with error for manual review
+        registrySheet.appendRow([
+          sheetId,
+          "unknown",
+          file.getName(),
+          new Date().toISOString(),
+          "ERROR: " + e.message,
+          file.getDateCreated().toISOString(),
+          file.getLastUpdated().toISOString(),
+          0 // Low priority
+        ]);
+      }
     }
   }
+  
+  // Save updated priority queue
+  if (priorityQueue.length > 0) {
+    properties.setProperty("PRIORITY_QUEUE", JSON.stringify(priorityQueue));
+  } else {
+    properties.deleteProperty("PRIORITY_QUEUE");
+  }
+  
+  // If we still have more files to process, schedule another run
+  if ((processedCount >= BATCH_SIZE && files.hasNext()) || priorityQueue.length > 0) {
+    // Schedule with exponential backoff if we're hitting rate limits
+    const backoffMinutes = processedCount === 0 ? 5 : 1;
+    ScriptApp.newTrigger('scanMemberSheetFolder')
+      .timeBased()
+      .after(1000 * 60 * backoffMinutes)
+      .create();
+    
+    Logger.log(`Scheduled next batch in ${backoffMinutes} minutes`);
+  }
+  
+  // Helper function to process a single sheet
+  function processSheet(sheetId, priority = 1) {
+    const file = DriveApp.getFileById(sheetId);
+    const sheet = SpreadsheetApp.openById(sheetId);
+    const memberEmail = extractMemberEmail(sheet);
+    
+    if (memberEmail) {
+      // Register new sheet
+      registrySheet.appendRow([
+        sheetId,
+        memberEmail,
+        sheet.getName(),
+        new Date().toISOString(),
+        "AUTO-REGISTERED",
+        file.getDateCreated().toISOString(),
+        file.getLastUpdated().toISOString(),
+        priority
+      ]);
+      
+      // Perform initial sync
+      const assets = extractAssets(sheet.getSheets()[0]);
+      const portfolioSheet = masterSheet.getSheetByName("Portfolios");
+      updateMasterPortfolio(portfolioSheet, memberEmail, assets, sheetId);
+    }
+  }
+  
+  // Helper function to find row index in registry data
+  function findRegistryRowIndex(data, sheetId) {
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] === sheetId) {
+        return i;
+      }
+    }
+    return -1;
+  }
+  
+  return {
+    processed: processedCount,
+    newSheets: newSheets,
+    updatedSheets: updatedSheets,
+    lastFullScan: properties.getProperty("LAST_FULL_SCAN_TIMESTAMP"),
+    lastQuickScan: properties.getProperty("LAST_QUICK_SCAN_TIMESTAMP"),
+    pendingPriorityItems: priorityQueue.length
+  };
 }
 ```
 
@@ -422,17 +558,19 @@ function processBatch(memberBatch, researchMap) {
 ### Implementation Timeline
 
 1. **Week 1 (Oct 15-21)**:
-   - Create Master Portfolio Sheet structure
-   - Develop initial sync script
-   - Set up change triggers
-   - Test data synchronization for a subset of users
+   - Create Master Portfolio Sheet with column-based structure
+   - Develop optimized Member Registry with enhanced metadata
+   - Implement initial sync script with locking mechanism
+   - Set up change triggers and queue system
+   - Test data synchronization for a subset of users (100-200 members)
 
 2. **Week 2 (Oct 22-30)**:
-   - Complete newsletter generation logic
-   - Integrate with HubSpot API
-   - Implement error handling and retries
-   - Test end-to-end with sample data
-   - Deploy for production use
+   - Implement tiered folder scanning approach with caching
+   - Complete newsletter generation logic with batch processing
+   - Integrate with HubSpot API and implement templating
+   - Add comprehensive error handling, logging, and retry logic
+   - Stress test with simulated 1,000-member load
+   - Deploy for production use with monitoring system
 
 ### Limitations and Considerations
 
@@ -560,6 +698,37 @@ A critical challenge in the short-term solution is handling concurrent updates t
    - Log detailed information about conflicts for manual resolution if needed
 
 This approach distributes updates over time and ensures that even with many simultaneous sheet modifications, the Master Portfolio Sheet remains consistent and accurate.
+
+### Scalability Optimizations
+
+The short-term solution includes several scalability optimizations to ensure it works efficiently even as the number of member sheets approaches the 1,000 member target:
+
+1. **Tiered Scanning Approach**:
+   - **Quick Scans**: Frequent scans that only look at recently modified files
+   - **Full Scans**: Less frequent (e.g., daily) scans that process all files but prioritize by creation date
+   - This strategy minimizes unnecessary rescanning of unchanged files
+
+2. **Smart Registry Schema**:
+   - **Creation & Modification Timestamps**: Used to prioritize processing and track changes
+   - **Priority Field**: Enables intelligent processing order with important sheets first
+   - **Sync Status Tracking**: Helps identify and resolve issues quickly
+
+3. **Caching & Persistence Strategies**:
+   - **Timestamp Caching**: Store last scan times to enable incremental processing
+   - **Priority Queue**: Persistent queue for sheets that need attention
+   - **Registry Metadata**: Rich metadata to avoid unnecessary file operations
+
+4. **Efficient Processing Techniques**:
+   - **Batch Processing**: Prevents timeout issues by processing files in manageable batches
+   - **Sorting by Date**: Processes newest sheets first for better user experience
+   - **Exponential Backoff**: Automatically adjusts processing schedule when hitting rate limits
+
+5. **File Query Optimization**:
+   - Using Drive API query parameters rather than retrieving all files and filtering in code
+   - Applying server-side sorting to get the most relevant files first
+   - Using mime type filters to only retrieve spreadsheet files
+
+These optimizations work together to ensure the system can handle the full 1,000 members without performance degradation, while setting the stage for the eventual transition to the BigQuery-based solution for truly unlimited scale.
 
 ## Long-Term Solution (30,000+ Members)
 
